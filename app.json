@@ -42,6 +42,15 @@
         {
           "microphonePermission": "Allow ADCC to use the microphone to auto-sync audio description and captions to the movie you're watching."
         }
+      ],
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "compileSdkVersion": 36,
+            "targetSdkVersion": 36
+          }
+        }
       ]
     ],
     "extra": {
