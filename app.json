@@ -1,25 +1,48 @@
 {
   "expo": {
-    "name": "ADX",
-    "slug": "ADX",
+    "name": "ADCC",
+    "slug": "adcc",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
-    "userInterfaceStyle": "light",
+    "userInterfaceStyle": "dark",
     "ios": {
       "supportsTablet": true
     },
     "android": {
+      "package": "com.adccpro.app",
       "adaptiveIcon": {
-        "backgroundColor": "#E6F4FE",
+        "backgroundColor": "#FFFFFF",
         "foregroundImage": "./assets/android-icon-foreground.png",
         "backgroundImage": "./assets/android-icon-background.png",
         "monochromeImage": "./assets/android-icon-monochrome.png"
       },
-      "predictiveBackGestureEnabled": false
+      "predictiveBackGestureEnabled": false,
+      "permissions": [
+        "android.permission.RECORD_AUDIO",
+        "android.permission.MODIFY_AUDIO_SETTINGS"
+      ],
+      "versionCode": 2
     },
     "web": {
       "favicon": "./assets/favicon.png"
-    }
+    },
+    "plugins": [
+      "expo-asset",
+      "expo-font",
+      "expo-secure-store",
+      [
+        "expo-av",
+        {
+          "microphonePermission": "Allow ADCC to use the microphone to auto-sync audio description and captions to the movie you're watching."
+        }
+      ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "96645036-5d77-4bc8-bb2c-64fb0e039286"
+      }
+    },
+    "owner": "adccpro"
   }
 }
