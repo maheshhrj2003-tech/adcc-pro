@@ -1,0 +1,37 @@
+name: EAS Update (OTA)
+
+# Publishes a JS/asset-only OTA update to the "production" channel on every
+# push to master. This does NOT rebuild the native app — devices only pick
+# this up if they're already running a build whose runtimeVersion matches
+# (see app.json: runtimeVersion.policy "appVersion"). Any change that touches
+# native code, permissions, or app.json's native config needs a real EAS
+# build + store submission instead — this workflow won't cover that.
+on:
+  push:
+    branches:
+      - master
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Setup EAS CLI
+        uses: expo/expo-github-action@v8
+        with:
+          eas-version: latest
+          token: ${{ secrets.EXPO_TOKEN }}
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Publish OTA update to production channel
+        run: eas update --channel production --message "${{ github.event.head_commit.message }}" --non-interactive
