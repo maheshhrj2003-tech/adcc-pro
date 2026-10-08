@@ -33,4 +33,9 @@ jobs:
       - name: Publish OTA update to production channel
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
-        run: eas update --channel production --message "${{ github.event.head_commit.message }}" --non-interactive
+          # Setting the message via env (not interpolated straight into the
+          # run script) avoids the shell re-parsing it — a multi-line commit
+          # message with a "-" prefixed line gets misread as a CLI flag
+          # otherwise, which is exactly what broke the last run.
+          COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
+        run: eas update --channel production --message "$(echo "$COMMIT_MESSAGE" | head -n1)" --non-interactive
