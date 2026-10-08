@@ -1,12 +1,15 @@
-import React, { useRef } from 'react';
-import { View, StyleSheet, PanResponder } from 'react-native';
-import { colors } from '../theme';
+import React, { useRef, useState } from 'react';
+import { View, Text, StyleSheet, TouchableOpacity, PanResponder, Modal } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
+import { colors, spacing } from '../theme';
 
 const MIN = -8;
 const MAX = 24;
 const STEP = 4;
-const TRACK_WIDTH = 120;
-const THUMB_SIZE = 22;
+// Large on purpose — this adjusts caption size for low-vision users, so the
+// control itself needs to be easy to see and hit, not a thin inline bar.
+const TRACK_WIDTH = 280;
+const THUMB_SIZE = 44;
 const USABLE_WIDTH = TRACK_WIDTH - THUMB_SIZE;
 
 interface Props {
@@ -14,13 +17,7 @@ interface Props {
   onChange: (value: number) => void;
 }
 
-// A small drag-to-adjust control, replacing separate +/- tap buttons for
-// caption size. Built on PanResponder (core React Native, no extra native
-// dependency) rather than a slider library, so this stays a pure-JS change.
-export default function CaptionSizeDrag({ value, onChange }: Props) {
-  // Refs mirror the latest props on every render — the PanResponder's
-  // handlers are created once (via the useRef below) and would otherwise
-  // close over stale values from whichever render first created them.
+function Track({ value, onChange }: Props) {
   const valueRef = useRef(value);
   valueRef.current = value;
   const onChangeRef = useRef(onChange);
@@ -69,12 +66,99 @@ export default function CaptionSizeDrag({ value, onChange }: Props) {
   );
 }
 
+// Small trigger button in the control row — tapping it opens a large,
+// easy-to-hit slider as a centered overlay, dismissed by tapping outside it.
+// Replaces a previous version that was just a small 120x22 inline drag bar,
+// too small a target for low-vision users to reliably use.
+export default function CaptionSizeDrag({ value, onChange }: Props) {
+  const [open, setOpen] = useState(false);
+
+  return (
+    <>
+      <TouchableOpacity
+        style={styles.trigger}
+        onPress={() => setOpen(true)}
+        accessibilityRole="button"
+        accessibilityLabel="Adjust caption size"
+      >
+        <Text style={styles.triggerText}>Aa</Text>
+      </TouchableOpacity>
+
+      <Modal visible={open} transparent animationType="fade" onRequestClose={() => setOpen(false)}>
+        <TouchableOpacity style={styles.backdrop} activeOpacity={1} onPress={() => setOpen(false)}>
+          <TouchableOpacity activeOpacity={1} style={styles.panel} onPress={() => {}}>
+            <Text style={styles.panelTitle}>Caption Size</Text>
+            <View style={styles.row}>
+              <TouchableOpacity
+                style={styles.stepBtn}
+                onPress={() => onChange(Math.max(MIN, value - STEP))}
+                accessibilityRole="button"
+                accessibilityLabel="Decrease caption size"
+              >
+                <Ionicons name="remove" size={26} color={colors.gold} />
+              </TouchableOpacity>
+              <Track value={value} onChange={onChange} />
+              <TouchableOpacity
+                style={styles.stepBtn}
+                onPress={() => onChange(Math.min(MAX, value + STEP))}
+                accessibilityRole="button"
+                accessibilityLabel="Increase caption size"
+              >
+                <Ionicons name="add" size={26} color={colors.gold} />
+              </TouchableOpacity>
+            </View>
+            <Text style={styles.panelHint}>Tap outside to close</Text>
+          </TouchableOpacity>
+        </TouchableOpacity>
+      </Modal>
+    </>
+  );
+}
+
 const styles = StyleSheet.create({
+  trigger: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    borderWidth: 1,
+    borderColor: colors.goldDim,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  triggerText: { color: colors.gold, fontWeight: '800', fontSize: 15 },
+  backdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.75)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: spacing.lg,
+  },
+  panel: {
+    backgroundColor: colors.surfaceRaised,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: 20,
+    padding: spacing.lg,
+    alignItems: 'center',
+    gap: spacing.md,
+  },
+  panelTitle: { color: colors.text, fontWeight: '700', fontSize: 16 },
+  row: { flexDirection: 'row', alignItems: 'center', gap: spacing.md },
+  stepBtn: {
+    width: 52,
+    height: 52,
+    borderRadius: 26,
+    borderWidth: 1,
+    borderColor: colors.goldDim,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  panelHint: { color: colors.textFaint, fontSize: 12 },
   track: {
     width: TRACK_WIDTH,
     height: THUMB_SIZE,
     borderRadius: THUMB_SIZE / 2,
-    backgroundColor: colors.surfaceRaised,
+    backgroundColor: colors.surface,
     borderWidth: 1,
     borderColor: colors.border,
     justifyContent: 'center',
@@ -83,9 +167,9 @@ const styles = StyleSheet.create({
     position: 'absolute',
     left: 0,
     top: '50%',
-    height: 3,
-    marginTop: -1.5,
-    borderRadius: 1.5,
+    height: 6,
+    marginTop: -3,
+    borderRadius: 3,
     backgroundColor: colors.gold,
   },
   thumb: {
@@ -94,7 +178,7 @@ const styles = StyleSheet.create({
     height: THUMB_SIZE,
     borderRadius: THUMB_SIZE / 2,
     backgroundColor: colors.gold,
-    borderWidth: 2,
+    borderWidth: 3,
     borderColor: colors.bg,
   },
 });
