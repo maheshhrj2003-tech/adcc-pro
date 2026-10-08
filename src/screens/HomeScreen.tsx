@@ -155,15 +155,6 @@ export default function HomeScreen({ navigation }: Props) {
         <View style={styles.rightIcons}>
           <TouchableOpacity
             style={styles.iconBtn}
-            onPress={() => navigation.navigate('Menu')}
-            hitSlop={10}
-            accessibilityRole="button"
-            accessibilityLabel="Open menu"
-          >
-            <Ionicons name="menu" size={20} color={colors.text} />
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={styles.iconBtn}
             onPress={() => setSearchOpen((v) => !v)}
             hitSlop={10}
             accessibilityRole="button"
