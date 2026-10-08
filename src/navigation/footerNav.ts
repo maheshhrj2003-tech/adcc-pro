@@ -16,14 +16,8 @@ export function handleFooterNav(
     navigation.navigate('Downloads');
     return;
   }
-  if (key === 'sync') {
-    if (context) {
-      navigation.navigate('Sync', context);
-    } else {
-      // No movie context available (e.g. tapped from Home) — Sync needs a
-      // specific downloaded title, so send the user to pick one first.
-      navigation.navigate('Downloads');
-    }
+  if (key === 'menu') {
+    navigation.navigate('Menu');
     return;
   }
 }

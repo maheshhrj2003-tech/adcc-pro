@@ -249,7 +249,7 @@ export default function HomeScreen({ navigation }: Props) {
               </TouchableOpacity>
 
               <View style={styles.heroInfo}>
-                <Text style={styles.heroTitle}>{featured.title}</Text>
+                <Text style={styles.heroTitle} numberOfLines={2}>{featured.title}</Text>
                 <View style={styles.heroMetaRow}>
                   <View style={styles.langPill}>
                     <Text style={styles.langPillText}>{featured.original_language.name.toUpperCase()}</Text>
@@ -404,7 +404,11 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surface,
   },
   heroInfo: { paddingHorizontal: spacing.md, marginTop: spacing.md },
-  heroTitle: { ...type.display, color: colors.text, textAlign: 'center' },
+  // Fixed height = exactly 2 lines, regardless of whether the current title
+  // actually wraps to 1 or 2 — otherwise the hero section's height changes
+  // every time the auto-advancing carousel switches titles, which shifts
+  // the whole page (including whatever's scrolled into view below it).
+  heroTitle: { ...type.display, color: colors.text, textAlign: 'center', lineHeight: 34, height: 68 },
   heroMetaRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', marginTop: spacing.sm, flexWrap: 'wrap' },
   langPill: { backgroundColor: colors.text, paddingHorizontal: 8, paddingVertical: 2, borderRadius: 4 },
   langPillText: { ...type.caption, color: colors.bg, fontWeight: '800', fontSize: 10 },
@@ -414,7 +418,11 @@ const styles = StyleSheet.create({
   dotActive: { backgroundColor: colors.gold, width: 18 },
   sectionTitle: { ...type.h2, color: colors.text, marginHorizontal: spacing.md, marginBottom: spacing.md },
   emptyText: { ...type.body, color: colors.textFaint, textAlign: 'center', marginTop: spacing.xl },
-  card: { flex: 1 },
+  // Fixed width, not flex: 1 — with numColumns=2, an odd-numbered last row
+  // has only one card in it, and flex:1 would stretch that lone card to
+  // fill the entire row (looking like a full-width banner) instead of
+  // staying the same half-width size as every other card in the grid.
+  card: { width: '48%' },
   poster: {
     aspectRatio: 2 / 3,
     borderRadius: radius.md,

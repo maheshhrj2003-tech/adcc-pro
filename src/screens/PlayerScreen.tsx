@@ -14,16 +14,10 @@ import { ApiError } from '../api/types';
 import { parseSrt, SrtCue } from '../utils/srt';
 import { usePreferences, CAPTION_SIZE_PT, CAPTION_COLOR_HEX } from '../preferences/PreferencesContext';
 import { useNowPlaying } from '../playback/NowPlayingContext';
+import CaptionSizeDrag from '../components/CaptionSizeDrag';
 import { colors, radius, spacing, type } from '../theme';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Player'>;
-
-function formatTime(s: number) {
-  if (!Number.isFinite(s) || s < 0) s = 0;
-  const m = Math.floor(s / 60);
-  const sec = Math.floor(s % 60);
-  return `${m}:${sec.toString().padStart(2, '0')}`;
-}
 
 export default function PlayerScreen({ route, navigation }: Props) {
   const { slug, language, autoSync } = route.params;
@@ -52,19 +46,16 @@ export default function PlayerScreen({ route, navigation }: Props) {
   const adOn = sessionActive ? now.adOn : true;
 
   const [loading, setLoading] = useState(true);
-  const [trackWidth, setTrackWidth] = useState(1);
   const manualClock = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  // Theater mode — activated automatically once auto-sync finds a match
-  // (see startAutoSync below). A full black, captions-only view for
-  // watching in a dark theater without a distracting UI or screen glow.
-  const [theaterMode, setTheaterMode] = useState(false);
+  // This is the only player view — a full black, captions-only screen for
+  // watching without a distracting UI or screen glow. There is no separate
+  // "normal" player screen; this is shown from the moment the title is
+  // ready, through sync, and for as long as the user is watching.
   const [theaterLocked, setTheaterLocked] = useState(false);
   // Shared across both the normal and theater views, so caption size stays
   // consistent whichever screen you adjust it from or switch between.
   const [captionBoost, setCaptionBoost] = useState(0);
-  const increaseCaptionSize = () => setCaptionBoost((v) => Math.min(24, v + 4));
-  const decreaseCaptionSize = () => setCaptionBoost((v) => Math.max(-8, v - 4));
 
   // The app is locked to portrait everywhere else (app.json), but this
   // screen unlocks rotation so theater mode can go fullscreen landscape
@@ -79,17 +70,6 @@ export default function PlayerScreen({ route, navigation }: Props) {
       ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP).catch(() => {});
     };
   }, []);
-
-  // Deliberate exit from theater mode (close button) — snap back to
-  // portrait so the normal player screen isn't left sideways, then
-  // re-unlock so the user can still rotate back into theater-fullscreen.
-  const exitTheaterMode = () => {
-    setTheaterMode(false);
-    setTheaterLocked(false);
-    ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP)
-      .then(() => ScreenOrientation.unlockAsync())
-      .catch(() => {});
-  };
 
   // Leaving this screen (back button, swipe-back, hardware back) hands the
   // live session off to the floating mini-player instead of stopping it —
@@ -303,24 +283,12 @@ export default function PlayerScreen({ route, navigation }: Props) {
     }
   };
 
-  const seekTo = async (fraction: number) => {
-    const target = fraction * durationSec;
-    if (sound) {
-      await sound.setPositionAsync(target * 1000);
-    } else {
-      now.setPositionSec(target);
-    }
-  };
-
   // Manual re-sync — the app-side action the API doc calls out (no server
   // endpoint for this; it's purely a client concern). This actually seeks
   // the master clock (the real audio position when AD exists, or the
   // manual clock when it doesn't) by the nudge amount, so captions — which
   // are derived from that same clock below — move together with the audio
-  // rather than drifting apart from it. `totalNudgeMs` is just the running
-  // total shown to the user, so Reset can undo exactly what was nudged.
-  const [totalNudgeMs, setTotalNudgeMs] = useState(0);
-
+  // rather than drifting apart from it.
   const nudgeSync = async (deltaMs: number) => {
     const targetSec = Math.max(0, Math.min(durationSec || Infinity, positionSec + deltaMs / 1000));
     if (__DEV__) console.log('[player] nudging sync by', deltaMs, 'ms -> seeking to', targetSec, 's');
@@ -329,18 +297,6 @@ export default function PlayerScreen({ route, navigation }: Props) {
     } else {
       now.setPositionSec(targetSec);
     }
-    setTotalNudgeMs((v) => v + deltaMs);
-  };
-
-  const resetSync = async () => {
-    if (totalNudgeMs === 0) return;
-    const targetSec = Math.max(0, positionSec - totalNudgeMs / 1000);
-    if (sound) {
-      await sound.setPositionAsync(targetSec * 1000);
-    } else {
-      now.setPositionSec(targetSec);
-    }
-    setTotalNudgeMs(0);
   };
 
   // Mic-based auto-sync — POST /tracks/{id}/sync. Records a short mic
@@ -421,14 +377,11 @@ export default function PlayerScreen({ route, navigation }: Props) {
         } else {
           now.setPositionSec(correctedSec);
         }
-        setTotalNudgeMs(0);
         setMicMessage('Synced!');
-        setTheaterMode(true);
         // A match needs no manual confirmation — the movie's already
         // playing behind the overlay by this point, so just show "Synced!"
-        // briefly and drop straight into theater mode on its own. A failed
-        // match still needs the manual Continue, since there's no automatic
-        // next step to walk into.
+        // briefly and auto-dismiss. A failed match still needs the manual
+        // Continue, since there's no automatic next step to walk into.
         if (syncAutoDismissTimer.current) clearTimeout(syncAutoDismissTimer.current);
         syncAutoDismissTimer.current = setTimeout(() => setMicMessage(null), 1300);
       } else {
@@ -490,8 +443,6 @@ export default function PlayerScreen({ route, navigation }: Props) {
     () => cues.find((c) => positionSec >= c.start && positionSec < c.end),
     [cues, positionSec]
   );
-
-  const progress = durationSec > 0 ? Math.min(positionSec / durationSec, 1) : 0;
 
   if (prepError) {
     return (
@@ -609,155 +560,19 @@ export default function PlayerScreen({ route, navigation }: Props) {
     </View>
   );
 
-  if (theaterMode) {
-    const captionSize = CAPTION_SIZE_PT[prefs.captionSize] + captionBoost;
-    return (
-      <View style={styles.theaterScreen}>
-        {!theaterLocked && (
-          <View style={[styles.theaterTopBar, { top: insets.top + spacing.sm }]}>
-            <TouchableOpacity
-              style={styles.theaterCloseBtn}
-              onPress={exitTheaterMode}
-              accessibilityRole="button"
-              accessibilityLabel="Exit theater mode"
-            >
-              <Ionicons name="chevron-down" size={20} color={colors.text} />
-            </TouchableOpacity>
-            <TouchableOpacity
-              onPress={toggleAd}
-              disabled={!hasAudio}
-              accessibilityRole="switch"
-              accessibilityState={{ checked: hasAudio && adOn, disabled: !hasAudio }}
-              accessibilityLabel={hasAudio ? 'Audio description toggle' : 'Audio description not downloaded'}
-            >
-              {hasAudio && adOn ? (
-                <View style={styles.adBadgeOn}>
-                  <Ionicons name="ear" size={13} color={colors.bg} />
-                  <Text style={styles.adBadgeOnText}>AD ON</Text>
-                </View>
-              ) : (
-                <View style={styles.adBadgeOff}>
-                  <Ionicons name="ear" size={13} color={colors.textFaint} />
-                  <Text style={styles.adBadgeOffText}>{hasAudio ? 'AD OFF' : 'NO AD'}</Text>
-                </View>
-              )}
-            </TouchableOpacity>
-          </View>
-        )}
-
-        <View style={styles.theaterCaptionWrap}>
-          {currentCue && (
-            <Text
-              style={[
-                styles.theaterCaptionText,
-                { fontSize: captionSize, lineHeight: captionSize * 1.45, color: CAPTION_COLOR_HEX[prefs.captionColor] },
-              ]}
-            >
-              {currentCue.text}
-            </Text>
-          )}
-        </View>
-
-        <View style={[styles.theaterControls, { paddingBottom: insets.bottom + spacing.md }]}>
-          {theaterLocked ? (
-            <TouchableOpacity
-              style={styles.theaterLockBtn}
-              onPress={() => setTheaterLocked(false)}
-              accessibilityRole="button"
-              accessibilityLabel="Unlock controls"
-            >
-              <Ionicons name="lock-closed" size={20} color={colors.textFaint} />
-            </TouchableOpacity>
-          ) : (
-            <>
-              <View style={styles.theaterControlsRow}>
-                <TouchableOpacity
-                  style={styles.theaterBtnSmall}
-                  onPress={decreaseCaptionSize}
-                  accessibilityRole="button"
-                  accessibilityLabel="Decrease caption size"
-                >
-                  <Ionicons name="text" size={16} color={colors.gold} />
-                  <Ionicons name="remove" size={11} color={colors.gold} style={styles.theaterBtnBadge} />
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={styles.theaterBtnSmall}
-                  onPress={increaseCaptionSize}
-                  accessibilityRole="button"
-                  accessibilityLabel="Increase caption size"
-                >
-                  <Ionicons name="text" size={22} color={colors.gold} />
-                  <Ionicons name="add" size={12} color={colors.gold} style={styles.theaterBtnBadge} />
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={styles.theaterBtnSmall}
-                  onPress={startAutoSync}
-                  accessibilityRole="button"
-                  accessibilityLabel="Resync using the microphone"
-                >
-                  <Ionicons name="mic" size={16} color={colors.gold} />
-                </TouchableOpacity>
-              </View>
-              <View style={styles.theaterControlsRow}>
-                <TouchableOpacity
-                  style={styles.theaterBtn}
-                  onPress={() => nudgeSync(-500)}
-                  accessibilityRole="button"
-                  accessibilityLabel="Skip back half a second"
-                >
-                  <Ionicons name="play-back" size={20} color={colors.gold} />
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={styles.theaterPlayBtn}
-                  onPress={togglePlay}
-                  accessibilityRole="button"
-                  accessibilityLabel={playing ? 'Pause' : 'Play'}
-                >
-                  <Ionicons name={playing ? 'pause' : 'play'} size={26} color={colors.bg} />
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={styles.theaterBtn}
-                  onPress={() => nudgeSync(500)}
-                  accessibilityRole="button"
-                  accessibilityLabel="Skip forward half a second"
-                >
-                  <Ionicons name="play-forward" size={20} color={colors.gold} />
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={styles.theaterBtn}
-                  onPress={() => setTheaterLocked(true)}
-                  accessibilityRole="button"
-                  accessibilityLabel="Lock controls"
-                >
-                  <Ionicons name="lock-open" size={20} color={colors.gold} />
-                </TouchableOpacity>
-              </View>
-            </>
-          )}
-        </View>
-
-        {syncOverlay}
-      </View>
-    );
-  }
-
+  const captionSize = CAPTION_SIZE_PT[prefs.captionSize] + captionBoost;
   return (
-    <View style={styles.screen}>
-      <View style={styles.videoArea}>
-        <View style={[styles.topBar, { paddingTop: insets.top + spacing.sm }]}>
+    <View style={styles.theaterScreen}>
+      {!theaterLocked && (
+        <View style={[styles.theaterTopBar, { top: insets.top + spacing.sm }]}>
           <TouchableOpacity
+            style={styles.theaterCloseBtn}
             onPress={() => navigation.goBack()}
-            hitSlop={12}
-            style={styles.iconBtn}
             accessibilityRole="button"
             accessibilityLabel="Close player"
           >
-            <Ionicons name="chevron-down" size={22} color={colors.text} />
+            <Ionicons name="chevron-down" size={20} color={colors.text} />
           </TouchableOpacity>
-          <View style={styles.topBarTitleWrap}>
-            <Text style={styles.topBarTitle} numberOfLines={1}>{record.title}</Text>
-            <Text style={styles.topBarSubtitle}>{record.languageName}</Text>
-          </View>
           <TouchableOpacity
             onPress={toggleAd}
             disabled={!hasAudio}
@@ -778,167 +593,80 @@ export default function PlayerScreen({ route, navigation }: Props) {
             )}
           </TouchableOpacity>
         </View>
+      )}
 
-        <TouchableOpacity
-          style={styles.centerPlay}
-          activeOpacity={0.8}
-          onPress={togglePlay}
-          accessibilityRole="button"
-          accessibilityLabel={playing ? 'Pause' : 'Play'}
-        >
-          <View style={styles.centerPlayCircle}>
-            <Ionicons name={playing ? 'pause' : 'play'} size={30} color={colors.text} />
-          </View>
-        </TouchableOpacity>
-
+      <View style={styles.theaterCaptionWrap}>
         {currentCue && (
-          <View style={styles.captionWrap} pointerEvents="none">
-            <Text
-              style={[
-                styles.captionText,
-                { fontSize: CAPTION_SIZE_PT[prefs.captionSize] + captionBoost, color: CAPTION_COLOR_HEX[prefs.captionColor] },
-              ]}
-            >
-              {currentCue.text}
-            </Text>
-          </View>
-        )}
-
-        <View style={[styles.bottomBar, { paddingBottom: spacing.md }]}>
-          <View style={styles.syncRow}>
-            <View style={styles.syncPill}>
-              <View style={[styles.syncDot, { backgroundColor: cues.length ? colors.success : colors.textFaint }]} />
-              <Text style={styles.syncText}>{cues.length ? 'CC loaded' : 'No CC track'}</Text>
-            </View>
-            <View style={styles.syncPill}>
-              <View style={[styles.syncDot, { backgroundColor: hasAudio && adOn ? colors.success : colors.textFaint }]} />
-              <Text style={styles.syncText}>
-                {!hasAudio ? 'Manual clock (no AD track)' : adOn ? 'AD synced to playback' : 'AD muted'}
-              </Text>
-            </View>
-            <TouchableOpacity
-              style={styles.captionSizeBtn}
-              onPress={decreaseCaptionSize}
-              accessibilityRole="button"
-              accessibilityLabel="Decrease caption size"
-            >
-              <Ionicons name="remove" size={14} color={colors.text} />
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={styles.captionSizeBtn}
-              onPress={increaseCaptionSize}
-              accessibilityRole="button"
-              accessibilityLabel="Increase caption size"
-            >
-              <Ionicons name="add" size={14} color={colors.text} />
-            </TouchableOpacity>
-          </View>
-
-          <TouchableOpacity
-            activeOpacity={1}
-            style={styles.timelineTrack}
-            onLayout={(e) => setTrackWidth(e.nativeEvent.layout.width || 1)}
-            onPress={(e) => seekTo(Math.max(0, Math.min(1, e.nativeEvent.locationX / trackWidth)))}
-            accessibilityRole="adjustable"
-            accessibilityLabel="Playback position"
-            accessibilityValue={{ text: `${formatTime(positionSec)} of ${formatTime(durationSec)}` }}
-            accessibilityActions={[
-              { name: 'increment', label: 'Skip forward 10 seconds' },
-              { name: 'decrement', label: 'Skip back 10 seconds' },
+          <Text
+            style={[
+              styles.theaterCaptionText,
+              { fontSize: captionSize, lineHeight: captionSize * 1.45, color: CAPTION_COLOR_HEX[prefs.captionColor] },
             ]}
-            onAccessibilityAction={(e) => {
-              if (durationSec <= 0) return;
-              const delta = 10 / durationSec;
-              if (e.nativeEvent.actionName === 'increment') seekTo(Math.min(1, progress + delta));
-              if (e.nativeEvent.actionName === 'decrement') seekTo(Math.max(0, progress - delta));
-            }}
           >
-            <View style={[styles.timelineFill, { width: `${progress * 100}%` }]} />
-            <View style={[styles.scrubber, { left: `${progress * 100}%` }]} />
-          </TouchableOpacity>
-          <View style={styles.timeRow}>
-            <Text style={styles.timeText}>{formatTime(positionSec)}</Text>
-            <Text style={styles.timeText}>{formatTime(durationSec)}</Text>
-          </View>
-        </View>
+            {currentCue.text}
+          </Text>
+        )}
       </View>
 
-      <View style={styles.infoPanel}>
-        <Text style={styles.infoTitle}>Now Playing</Text>
-        <View style={styles.infoRow}>
-          <Ionicons name="ear" size={16} color={colors.gold} />
-          <Text style={styles.infoLabel}>Audio Description</Text>
-          <Text style={styles.infoFile} numberOfLines={1}>
-            {record.adPath ? 'Ready' : 'Not available'}
-          </Text>
-        </View>
-        <View style={styles.infoRow}>
-          <Ionicons name="text" size={16} color={colors.gold} />
-          <Text style={styles.infoLabel}>Closed Captions</Text>
-          <Text style={styles.infoFile} numberOfLines={1}>
-            {record.ccPath ? 'Ready' : 'Not available'}
-          </Text>
-        </View>
-
-        <TouchableOpacity
-          style={styles.resyncBtn}
-          onPress={startAutoSync}
-          accessibilityRole="button"
-          accessibilityLabel="Resync using the microphone"
-        >
-          <Ionicons name="mic" size={16} color={colors.gold} />
-          <Text style={styles.resyncBtnText}>Resync</Text>
-        </TouchableOpacity>
-
-        <View style={styles.syncNudgeCard}>
-          <View style={styles.syncNudgeHeader}>
-            <Text style={styles.syncNudgeTitle}>{hasAudio ? 'Manual Fine-Tune' : 'Caption Sync'}</Text>
-            <TouchableOpacity
-              onPress={resetSync}
-              disabled={totalNudgeMs === 0}
-              accessibilityRole="button"
-              accessibilityLabel="Reset sync offset"
-            >
-              <Text style={[styles.syncNudgeReset, totalNudgeMs === 0 && styles.syncNudgeResetDisabled]}>Reset</Text>
-            </TouchableOpacity>
-          </View>
-          <View style={styles.syncNudgeRow}>
-            <TouchableOpacity
-              style={styles.syncNudgeBtn}
-              onPress={() => nudgeSync(-500)}
-              accessibilityRole="button"
-              accessibilityLabel="Rewind half a second to sync earlier"
-            >
-              <Ionicons name="play-back" size={16} color={colors.gold} />
-            </TouchableOpacity>
-            <Text style={styles.syncNudgeValue}>
-              {totalNudgeMs === 0 ? 'In sync' : `${totalNudgeMs > 0 ? '+' : ''}${totalNudgeMs}ms`}
-            </Text>
-            <TouchableOpacity
-              style={styles.syncNudgeBtn}
-              onPress={() => nudgeSync(500)}
-              accessibilityRole="button"
-              accessibilityLabel="Skip forward half a second to sync later"
-            >
-              <Ionicons name="play-forward" size={16} color={colors.gold} />
-            </TouchableOpacity>
-          </View>
-          <Text style={styles.syncNudgeHint}>
-            {hasAudio
-              ? "Nudges both the audio and captions together, so they stay locked to each other while you align them to what you're watching."
-              : "Nudges the caption clock — there's no AD track for this language, so only captions are affected."}
-          </Text>
-        </View>
-
-        <TouchableOpacity
-          style={styles.syncDetailBtn}
-          onPress={() => navigation.navigate('Sync', { slug, language })}
-          accessibilityRole="button"
-          accessibilityLabel="View sync status"
-        >
-          <Text style={styles.syncDetailText}>View sync status</Text>
-          <Ionicons name="chevron-forward" size={16} color={colors.gold} />
-        </TouchableOpacity>
+      <View style={[styles.theaterControls, { paddingBottom: insets.bottom + spacing.md }]}>
+        {theaterLocked ? (
+          <TouchableOpacity
+            style={styles.theaterLockBtn}
+            onPress={() => setTheaterLocked(false)}
+            accessibilityRole="button"
+            accessibilityLabel="Unlock controls"
+          >
+            <Ionicons name="lock-closed" size={20} color={colors.textFaint} />
+          </TouchableOpacity>
+        ) : (
+          <>
+            <View style={styles.theaterControlsRow}>
+              <CaptionSizeDrag value={captionBoost} onChange={setCaptionBoost} />
+              <TouchableOpacity
+                style={styles.theaterBtnSmall}
+                onPress={startAutoSync}
+                accessibilityRole="button"
+                accessibilityLabel="Resync using the microphone"
+              >
+                <Ionicons name="mic" size={16} color={colors.gold} />
+              </TouchableOpacity>
+            </View>
+            <View style={styles.theaterControlsRow}>
+              <TouchableOpacity
+                style={styles.theaterBtn}
+                onPress={() => nudgeSync(-500)}
+                accessibilityRole="button"
+                accessibilityLabel="Skip back half a second"
+              >
+                <Ionicons name="play-back" size={20} color={colors.gold} />
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.theaterPlayBtn}
+                onPress={togglePlay}
+                accessibilityRole="button"
+                accessibilityLabel={playing ? 'Pause' : 'Play'}
+              >
+                <Ionicons name={playing ? 'pause' : 'play'} size={26} color={colors.bg} />
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.theaterBtn}
+                onPress={() => nudgeSync(500)}
+                accessibilityRole="button"
+                accessibilityLabel="Skip forward half a second"
+              >
+                <Ionicons name="play-forward" size={20} color={colors.gold} />
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.theaterBtn}
+                onPress={() => setTheaterLocked(true)}
+                accessibilityRole="button"
+                accessibilityLabel="Lock controls"
+              >
+                <Ionicons name="lock-open" size={20} color={colors.gold} />
+              </TouchableOpacity>
+            </View>
+          </>
+        )}
       </View>
 
       {syncOverlay}
@@ -1004,7 +732,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  theaterBtnBadge: { position: 'absolute', top: 4, right: 4 },
   theaterPlayBtn: {
     width: 64,
     height: 64,
@@ -1021,19 +748,6 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     opacity: 0.5,
   },
-  videoArea: { aspectRatio: 16 / 10, justifyContent: 'space-between', backgroundColor: '#000000' },
-  topBar: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: spacing.md, gap: spacing.sm },
-  iconBtn: {
-    width: 34,
-    height: 34,
-    borderRadius: 17,
-    backgroundColor: 'rgba(255,255,255,0.12)',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  topBarTitleWrap: { flex: 1 },
-  topBarTitle: { ...type.body, color: colors.text, fontWeight: '700' },
-  topBarSubtitle: { ...type.caption, color: colors.textMuted },
   adBadgeOn: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1055,96 +769,6 @@ const styles = StyleSheet.create({
     borderRadius: radius.pill,
   },
   adBadgeOffText: { ...type.caption, color: colors.textFaint, fontWeight: '700', fontSize: 10 },
-  centerPlay: { alignItems: 'center', justifyContent: 'center' },
-  centerPlayCircle: {
-    width: 64,
-    height: 64,
-    borderRadius: 32,
-    backgroundColor: 'rgba(255,255,255,0.1)',
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.25)',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  captionWrap: {
-    position: 'absolute',
-    top: 0,
-    bottom: 0,
-    left: spacing.lg,
-    right: spacing.lg,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  captionText: {
-    ...type.body,
-    color: colors.text,
-    backgroundColor: 'rgba(0,0,0,0.6)',
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: radius.sm,
-    textAlign: 'center',
-    overflow: 'hidden',
-  },
-  bottomBar: { paddingHorizontal: spacing.md },
-  syncRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, marginBottom: spacing.sm },
-  syncPill: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    backgroundColor: 'rgba(0,0,0,0.45)',
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: radius.pill,
-  },
-  syncDot: { width: 6, height: 6, borderRadius: 3 },
-  captionSizeBtn: {
-    width: 26,
-    height: 26,
-    borderRadius: 13,
-    backgroundColor: 'rgba(0,0,0,0.45)',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginLeft: 'auto',
-  },
-  syncText: { ...type.caption, color: colors.text, fontSize: 10 },
-  timelineTrack: {
-    height: 16,
-    justifyContent: 'center',
-  },
-  timelineFill: {
-    position: 'absolute',
-    left: 0,
-    height: 4,
-    backgroundColor: colors.gold,
-    borderRadius: 2,
-  },
-  scrubber: {
-    position: 'absolute',
-    width: 12,
-    height: 12,
-    borderRadius: 6,
-    backgroundColor: colors.text,
-    marginLeft: -6,
-  },
-  timeRow: { flexDirection: 'row', justifyContent: 'space-between', marginTop: spacing.xs },
-  timeText: { ...type.caption, color: colors.textMuted, fontSize: 10 },
-  infoPanel: { padding: spacing.md, gap: spacing.md },
-  infoTitle: { ...type.label, color: colors.gold },
-  infoRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
-  infoLabel: { ...type.body, color: colors.text, fontWeight: '600', width: 150 },
-  infoFile: { ...type.caption, color: colors.textFaint, flex: 1 },
-  resyncBtn: {
-    flexDirection: 'row',
-    alignSelf: 'flex-start',
-    alignItems: 'center',
-    gap: 6,
-    borderWidth: 1,
-    borderColor: colors.goldDim,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: radius.pill,
-  },
-  resyncBtnText: { ...type.caption, color: colors.gold, fontWeight: '700' },
   syncOverlay: {
     position: 'absolute',
     top: 0,
@@ -1197,39 +821,4 @@ const styles = StyleSheet.create({
   syncOverlayResyncText: { ...type.body, color: colors.bg, fontWeight: '700' },
   syncOverlayContinueBtn: { alignItems: 'center', paddingVertical: 10 },
   syncOverlayContinueText: { ...type.body, color: colors.textMuted, fontWeight: '600' },
-  syncNudgeCard: {
-    backgroundColor: colors.surface,
-    borderWidth: 1,
-    borderColor: colors.border,
-    borderRadius: radius.md,
-    padding: spacing.md,
-    marginTop: spacing.sm,
-  },
-  syncNudgeHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: spacing.sm },
-  syncNudgeTitle: { ...type.label, color: colors.gold },
-  syncNudgeReset: { ...type.caption, color: colors.gold, fontWeight: '700' },
-  syncNudgeResetDisabled: { color: colors.textFaint },
-  syncNudgeRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: spacing.lg },
-  syncNudgeBtn: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: colors.surfaceRaised,
-    borderWidth: 1,
-    borderColor: colors.border,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  syncNudgeValue: { ...type.body, color: colors.text, fontWeight: '700', minWidth: 80, textAlign: 'center' },
-  syncNudgeHint: { ...type.caption, color: colors.textFaint, textAlign: 'center', marginTop: spacing.sm, lineHeight: 16 },
-  syncDetailBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    marginTop: spacing.sm,
-    paddingTop: spacing.md,
-    borderTopWidth: 1,
-    borderTopColor: colors.border,
-  },
-  syncDetailText: { ...type.body, color: colors.gold, fontWeight: '600' },
 });
