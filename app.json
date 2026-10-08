@@ -4,6 +4,12 @@
     "slug": "adcc",
     "version": "1.0.0",
     "orientation": "portrait",
+    "runtimeVersion": {
+      "policy": "appVersion"
+    },
+    "updates": {
+      "url": "https://u.expo.dev/96645036-5d77-4bc8-bb2c-64fb0e039286"
+    },
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "dark",
     "ios": {
