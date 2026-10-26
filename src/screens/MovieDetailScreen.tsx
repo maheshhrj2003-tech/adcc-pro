@@ -1,12 +1,11 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity, ImageBackground, ActivityIndicator, Alert } from 'react-native';
-import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../navigation/types';
-import ChromeHeader from '../components/ChromeHeader';
 import { getMovieBySlug } from '../api/catalog';
 import { addFavorite, removeFavorite, getFavorites } from '../api/favorites';
+import { getDownloadRecord, saveDownloadRecord, downloadMovieLanguageTracks, DownloadRecord } from '../api/downloads';
 import { ApiError, ApiMovie, MovieLanguageTrack } from '../api/types';
 import { useAuth } from '../auth/AuthContext';
 import { usePreferences } from '../preferences/PreferencesContext';
@@ -15,11 +14,13 @@ import { colors, radius, spacing, type } from '../theme';
 type Props = NativeStackScreenProps<RootStackParamList, 'MovieDetail'>;
 
 function formatRuntime(seconds: number | null): string {
-  if (seconds === null) return 'Runtime not listed';
+  if (seconds === null) return '—';
   const h = Math.floor(seconds / 3600);
   const m = Math.round((seconds % 3600) / 60);
   return h > 0 ? `${h}h ${m}m` : `${m}m`;
 }
+
+const SYNOPSIS_PREVIEW_CHARS = 140;
 
 export default function MovieDetailScreen({ route, navigation }: Props) {
   const { slug } = route.params;
@@ -32,6 +33,15 @@ export default function MovieDetailScreen({ route, navigation }: Props) {
   const [selectedTrack, setSelectedTrack] = useState<MovieLanguageTrack | null>(null);
   const [isFavorite, setIsFavorite] = useState(false);
   const [favoriteBusy, setFavoriteBusy] = useState(false);
+  const [synopsisExpanded, setSynopsisExpanded] = useState(false);
+
+  // Download state for the currently-selected language — owns the whole
+  // "download, then show Play" step, matching the reference flow (progress
+  // bar on this screen, not a separate Download screen).
+  const [downloadRecord, setDownloadRecord] = useState<DownloadRecord | null>(null);
+  const [downloading, setDownloading] = useState(false);
+  const [downloadProgress, setDownloadProgress] = useState({ cc: 0, ad: 0 });
+  const [downloadError, setDownloadError] = useState<string | null>(null);
 
   const load = useCallback(() => {
     setLoading(true);
@@ -39,9 +49,6 @@ export default function MovieDetailScreen({ route, navigation }: Props) {
     getMovieBySlug(slug)
       .then((m) => {
         setMovie(m);
-        // Respect the user's default-language accessibility preference when
-        // this title actually has a live track in it; otherwise fall back
-        // to the first available track.
         const preferred = prefs.defaultLanguageCode
           ? m.languages.find((l) => l.language.code === prefs.defaultLanguageCode)
           : undefined;
@@ -61,16 +68,66 @@ export default function MovieDetailScreen({ route, navigation }: Props) {
     load();
   }, [load]);
 
-  // GET /favorites — check whether this title is already saved, so the
-  // heart icon reflects real state rather than always starting unfavorited.
   useEffect(() => {
     if (!isAuthenticated || !movie) return;
     getFavorites()
       .then((favs) => setIsFavorite(favs.some((f) => f.id === movie.id)))
-      .catch(() => {
-        // Non-fatal — heart just falls back to its default state.
-      });
+      .catch(() => {});
   }, [isAuthenticated, movie?.id]);
+
+  // Auto-download the selected language's tracks the moment this screen
+  // knows which language is selected — Play being the only step means the
+  // download has to start on its own, not wait for a tap.
+  useEffect(() => {
+    if (!selectedTrack || !movie) return;
+    let cancelled = false;
+    const languageCode = selectedTrack.language.code;
+
+    (async () => {
+      setDownloadError(null);
+      const existing = await getDownloadRecord(slug, languageCode);
+      if (cancelled) return;
+      if (existing) {
+        setDownloadRecord(existing);
+        return;
+      }
+
+      setDownloadRecord(null);
+      if (!selectedTrack.downloads.cc && !selectedTrack.downloads.ad) return;
+
+      setDownloading(true);
+      setDownloadProgress({ cc: 0, ad: 0 });
+      try {
+        const result = await downloadMovieLanguageTracks(slug, languageCode, {
+          onCcProgress: (f) => !cancelled && setDownloadProgress((p) => ({ ...p, cc: f })),
+          onAdProgress: (f) => !cancelled && setDownloadProgress((p) => ({ ...p, ad: f })),
+        });
+        if (cancelled) return;
+        const record: DownloadRecord = {
+          slug,
+          trackId: result.trackId,
+          title: movie.title,
+          posterUrl: movie.poster_url,
+          languageCode,
+          languageName: selectedTrack.language.name,
+          ccPath: result.ccPath,
+          adPath: result.adPath,
+          runtimeSeconds: result.runtimeSeconds,
+          downloadedAt: new Date().toISOString(),
+        };
+        await saveDownloadRecord(record);
+        if (!cancelled) setDownloadRecord(record);
+      } catch (e) {
+        if (!cancelled) setDownloadError(e instanceof Error ? e.message : 'Download failed. Try again.');
+      } finally {
+        if (!cancelled) setDownloading(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [slug, movie, selectedTrack]);
 
   const toggleFavorite = async () => {
     if (!isAuthenticated) {
@@ -99,206 +156,292 @@ export default function MovieDetailScreen({ route, navigation }: Props) {
 
   if (loading) {
     return (
-      <View style={styles.screen}>
-        <ChromeHeader title="Loading…" onBack={() => navigation.goBack()} />
-        <View style={styles.centerFill}>
-          <ActivityIndicator color={colors.gold} size="large" />
-        </View>
+      <View style={[styles.screen, styles.centerFill]}>
+        <ActivityIndicator color={colors.gold} size="large" />
       </View>
     );
   }
 
   if (error || !movie) {
     return (
-      <View style={styles.screen}>
-        <ChromeHeader title="Movie" onBack={() => navigation.goBack()} />
-        <View style={styles.centerFill}>
-          <Ionicons name="alert-circle-outline" size={32} color={colors.textFaint} />
-          <Text style={styles.errorText}>{error}</Text>
-          <TouchableOpacity style={styles.retryBtn} onPress={load} accessibilityRole="button" accessibilityLabel="Retry">
-            <Text style={styles.retryText}>Retry</Text>
-          </TouchableOpacity>
-        </View>
+      <View style={[styles.screen, styles.centerFill]}>
+        <Ionicons name="alert-circle-outline" size={32} color={colors.textFaint} />
+        <Text style={styles.errorText}>{error}</Text>
+        <TouchableOpacity style={styles.retryBtn} onPress={load} accessibilityRole="button" accessibilityLabel="Retry">
+          <Text style={styles.retryText}>Retry</Text>
+        </TouchableOpacity>
       </View>
     );
   }
 
-  const available = !!selectedTrack && (!!selectedTrack.downloads.cc || !!selectedTrack.downloads.ad);
+  const ready = !!downloadRecord;
+  const overallProgress = (downloadProgress.cc + downloadProgress.ad) / 2;
+  const synopsis = movie.synopsis ?? '';
+  const synopsisTruncated = !synopsisExpanded && synopsis.length > SYNOPSIS_PREVIEW_CHARS;
 
   return (
     <View style={styles.screen}>
-      <ChromeHeader
-        title={movie.title}
-        subtitle={`${movie.release_year}`}
-        onBack={() => navigation.goBack()}
-        right={
-          <TouchableOpacity
-            onPress={toggleFavorite}
-            disabled={favoriteBusy}
-            hitSlop={10}
-            accessibilityRole="switch"
-            accessibilityState={{ checked: isFavorite, busy: favoriteBusy }}
-            accessibilityLabel={isFavorite ? 'Remove from favorites' : 'Add to favorites'}
-          >
-            <Ionicons
-              name={isFavorite ? 'heart' : 'heart-outline'}
-              size={22}
-              color={isFavorite ? colors.danger : colors.bg}
-            />
-          </TouchableOpacity>
-        }
-      />
+      <View style={styles.header}>
+        <TouchableOpacity style={styles.headerIconBtn} onPress={() => navigation.goBack()} hitSlop={12} accessibilityRole="button" accessibilityLabel="Go back">
+          <Ionicons name="chevron-back" size={22} color={colors.text} />
+        </TouchableOpacity>
+        <View style={styles.brandRow}>
+          <Text style={styles.brand} numberOfLines={1}>ADCC</Text>
+          <Text style={styles.brandSub} numberOfLines={1}>PRO</Text>
+        </View>
+        <TouchableOpacity
+          style={styles.headerIconBtn}
+          onPress={toggleFavorite}
+          disabled={favoriteBusy}
+          hitSlop={10}
+          accessibilityRole="switch"
+          accessibilityState={{ checked: isFavorite, busy: favoriteBusy }}
+          accessibilityLabel={isFavorite ? 'Remove from favorites' : 'Add to favorites'}
+        >
+          <Ionicons name={isFavorite ? 'heart' : 'heart-outline'} size={22} color={isFavorite ? colors.danger : colors.text} />
+        </TouchableOpacity>
+      </View>
 
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
-        <View style={styles.banner}>
+        <View style={styles.posterCard}>
           <ImageBackground source={{ uri: movie.poster_url }} style={StyleSheet.absoluteFill} resizeMode="cover" />
-          <LinearGradient colors={['transparent', 'rgba(0,0,0,0.95)']} style={StyleSheet.absoluteFill} />
-          <View style={styles.bannerBody}>
-            <Text style={styles.title}>{movie.title}</Text>
-            <Text style={styles.meta}>
-              {movie.release_year} &middot; {movie.original_language.name}
+        </View>
+
+        <Text style={styles.title}>{movie.title}</Text>
+
+        <View style={styles.infoCard}>
+          <View style={styles.infoCol}>
+            <Text style={styles.infoValue}>{movie.release_year}</Text>
+            <Text style={styles.infoLabel}>RELEASED</Text>
+          </View>
+          <View style={styles.infoDivider} />
+          <View style={styles.infoCol}>
+            <Text style={styles.infoValue}>{formatRuntime(selectedTrack?.runtime_seconds ?? null)}</Text>
+            <Text style={styles.infoLabel}>RUNTIME</Text>
+          </View>
+          <View style={styles.infoDivider} />
+          <View style={styles.infoCol}>
+            <Text style={styles.infoValue} numberOfLines={1}>
+              {selectedTrack?.language.name ?? movie.original_language.name}
             </Text>
+            <Text style={styles.infoLabel}>LANGUAGE</Text>
           </View>
         </View>
 
-        {movie.synopsis && <Text style={styles.synopsis}>{movie.synopsis}</Text>}
-
-        <Text style={styles.sectionLabel}>SELECT LANGUAGE</Text>
-        <View style={styles.langRow}>
-          {movie.languages.map((track) => {
-            const isSelected = selectedTrack?.language.code === track.language.code;
-            return (
-              <TouchableOpacity
-                key={track.language.code}
-                style={[styles.langPill, isSelected && styles.langPillActive]}
-                onPress={() => setSelectedTrack(track)}
-                activeOpacity={0.8}
-                accessibilityRole="radio"
-                accessibilityState={{ selected: isSelected }}
-                accessibilityLabel={track.language.name}
-              >
-                <Text style={[styles.langText, isSelected && styles.langTextActive]}>{track.language.name}</Text>
-              </TouchableOpacity>
-            );
-          })}
-        </View>
-        {movie.languages.length === 0 && (
-          <Text style={styles.unavailableNote}>No language tracks are live for this title yet.</Text>
+        {movie.languages.length > 1 && (
+          <View style={styles.langRow}>
+            {movie.languages.map((track) => {
+              const isSelected = selectedTrack?.language.code === track.language.code;
+              return (
+                <TouchableOpacity
+                  key={track.language.code}
+                  style={[styles.langPill, isSelected && styles.langPillActive]}
+                  onPress={() => setSelectedTrack(track)}
+                  accessibilityRole="radio"
+                  accessibilityState={{ selected: isSelected }}
+                  accessibilityLabel={track.language.name}
+                >
+                  <Text style={[styles.langText, isSelected && styles.langTextActive]}>{track.language.name}</Text>
+                </TouchableOpacity>
+              );
+            })}
+          </View>
         )}
 
         {selectedTrack && (
-          <>
-            <Text style={styles.sectionLabel}>ACCESSIBILITY TRACKS</Text>
-            <View style={[styles.trackCard, !selectedTrack.downloads.ad && styles.trackCardDisabled]}>
-              <View style={styles.trackIcon}>
-                <Ionicons name="ear" size={20} color={selectedTrack.downloads.ad ? colors.gold : colors.textFaint} />
-              </View>
-              <View style={styles.trackInfo}>
-                <Text style={styles.trackTitle}>Audio Description</Text>
-                <Text style={styles.trackFile}>
-                  {selectedTrack.downloads.ad ? formatRuntime(selectedTrack.runtime_seconds) : 'Not available in this language'}
-                </Text>
-              </View>
+          <View style={styles.trackPillRow}>
+            <View style={[styles.trackPill, !selectedTrack.downloads.ad && styles.trackPillOff]}>
+              <Ionicons
+                name={selectedTrack.downloads.ad ? 'checkmark' : 'close'}
+                size={13}
+                color={selectedTrack.downloads.ad ? colors.gold : colors.textFaint}
+              />
+              <Text style={[styles.trackPillText, !selectedTrack.downloads.ad && styles.trackPillTextOff]}>ADX</Text>
             </View>
-            <View style={[styles.trackCard, !selectedTrack.downloads.cc && styles.trackCardDisabled]}>
-              <View style={styles.trackIcon}>
-                <Ionicons name="text" size={20} color={selectedTrack.downloads.cc ? colors.gold : colors.textFaint} />
-              </View>
-              <View style={styles.trackInfo}>
-                <Text style={styles.trackTitle}>Closed Captions</Text>
-                <Text style={styles.trackFile}>
-                  {selectedTrack.downloads.cc ? formatRuntime(selectedTrack.runtime_seconds) : 'Not available in this language'}
-                </Text>
-              </View>
+            <View style={[styles.trackPill, !selectedTrack.downloads.cc && styles.trackPillOff]}>
+              <Ionicons
+                name={selectedTrack.downloads.cc ? 'checkmark' : 'close'}
+                size={13}
+                color={selectedTrack.downloads.cc ? colors.gold : colors.textFaint}
+              />
+              <Text style={[styles.trackPillText, !selectedTrack.downloads.cc && styles.trackPillTextOff]}>CC</Text>
             </View>
-          </>
+          </View>
         )}
-      </ScrollView>
 
-      <View style={styles.footerBar}>
-        <TouchableOpacity
-          disabled={!available}
-          style={[styles.downloadBtn, !available && styles.downloadBtnDisabled]}
-          activeOpacity={0.85}
-          onPress={() =>
-            selectedTrack &&
-            navigation.navigate('Player', { slug: movie.slug, language: selectedTrack.language.code, autoSync: true })
-          }
-          accessibilityRole="button"
-          accessibilityLabel="Play"
-          accessibilityState={{ disabled: !available }}
-        >
-          <Ionicons name="play" size={18} color={colors.bg} />
-          <Text style={styles.downloadBtnText}>Play</Text>
-        </TouchableOpacity>
-      </View>
+        {downloadError ? (
+          <View style={styles.downloadErrorWrap}>
+            <Text style={styles.downloadErrorText}>{downloadError}</Text>
+            <TouchableOpacity
+              onPress={() => setSelectedTrack((t) => (t ? { ...t } : t))}
+              accessibilityRole="button"
+              accessibilityLabel="Retry download"
+            >
+              <Text style={styles.retryInlineText}>Retry</Text>
+            </TouchableOpacity>
+          </View>
+        ) : ready ? (
+          <TouchableOpacity
+            style={styles.playBtn}
+            activeOpacity={0.85}
+            onPress={() => selectedTrack && navigation.navigate('Sync', { slug: movie.slug, language: selectedTrack.language.code })}
+            accessibilityRole="button"
+            accessibilityLabel="Play movie"
+          >
+            <Ionicons name="play" size={18} color={colors.text} />
+            <Text style={styles.playBtnText}>PLAY MOVIE</Text>
+          </TouchableOpacity>
+        ) : downloading ? (
+          <View style={styles.progressTrack}>
+            <View style={[styles.progressFill, { width: `${Math.round(overallProgress * 100)}%` }]} />
+            <Text style={styles.progressText}>{Math.round(overallProgress * 100)}%</Text>
+          </View>
+        ) : (
+          <Text style={styles.unavailableNote}>No downloadable tracks for this language yet.</Text>
+        )}
+
+        {synopsis.length > 0 && (
+          <View style={styles.sectionBlock}>
+            <View style={styles.sectionHeadingRow}>
+              <View style={styles.sectionAccent} />
+              <Text style={styles.sectionHeading}>Synopsis</Text>
+            </View>
+            <Text style={styles.synopsisText} numberOfLines={synopsisTruncated ? 3 : undefined}>
+              {synopsis}
+            </Text>
+            {synopsis.length > SYNOPSIS_PREVIEW_CHARS && (
+              <TouchableOpacity onPress={() => setSynopsisExpanded((v) => !v)} accessibilityRole="button" accessibilityLabel="Toggle synopsis">
+                <Text style={styles.readMore}>{synopsisExpanded ? 'Show less' : 'Read more'}</Text>
+              </TouchableOpacity>
+            )}
+          </View>
+        )}
+
+        <View style={styles.sectionBlock}>
+          <View style={styles.sectionHeadingRow}>
+            <View style={styles.sectionAccent} />
+            <Text style={styles.sectionHeading}>How it works</Text>
+          </View>
+          <View style={styles.howItem}>
+            <Ionicons name="download-outline" size={18} color={colors.gold} />
+            <Text style={styles.howText}>Download content to your device.</Text>
+          </View>
+          <View style={styles.howItem}>
+            <Ionicons name="headset-outline" size={18} color={colors.gold} />
+            <Text style={styles.howText}>Wear headphones for the best experience.</Text>
+          </View>
+          <View style={styles.howItem}>
+            <Ionicons name="mic-outline" size={18} color={colors.gold} />
+            <Text style={styles.howText}>Tap to sync — ADCC PRO listens and syncs to the movie automatically.</Text>
+          </View>
+        </View>
+      </ScrollView>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: colors.bg },
-  centerFill: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: spacing.md, paddingHorizontal: spacing.xl },
+  centerFill: { alignItems: 'center', justifyContent: 'center', gap: spacing.md, paddingHorizontal: spacing.xl },
   errorText: { ...type.body, color: colors.textFaint, textAlign: 'center' },
   retryBtn: { backgroundColor: colors.gold, paddingHorizontal: spacing.lg, paddingVertical: spacing.sm, borderRadius: radius.pill },
-  retryText: { ...type.body, color: colors.bg, fontWeight: '700' },
-  content: { paddingBottom: spacing.xl },
-  banner: { height: 220, justifyContent: 'flex-end', backgroundColor: colors.surface },
-  bannerBody: { padding: spacing.md },
-  title: { ...type.display, color: colors.text },
-  meta: { ...type.body, color: colors.textMuted, marginTop: 4 },
-  synopsis: { ...type.body, color: colors.textMuted, padding: spacing.md, lineHeight: 22 },
-  sectionLabel: { ...type.label, color: colors.gold, marginHorizontal: spacing.md, marginTop: spacing.md, marginBottom: spacing.sm },
-  langRow: { flexDirection: 'row', gap: spacing.sm, marginHorizontal: spacing.md, flexWrap: 'wrap' },
-  langPill: {
+  retryText: { ...type.body, color: colors.text, fontWeight: '700' },
+  header: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 6,
+    justifyContent: 'space-between',
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.md,
+  },
+  headerIconBtn: { width: 32, alignItems: 'center' },
+  brandRow: { flex: 1, flexDirection: 'row', justifyContent: 'center', alignItems: 'baseline', gap: 4 },
+  brand: { ...type.h1, color: colors.text, letterSpacing: 1 },
+  brandSub: { ...type.caption, color: colors.gold, fontWeight: '800', letterSpacing: 1 },
+  content: { paddingBottom: spacing.xxl },
+  posterCard: {
+    alignSelf: 'center',
+    width: '55%',
+    aspectRatio: 2 / 3,
+    marginTop: spacing.sm,
+    borderRadius: radius.md,
+    overflow: 'hidden',
+    backgroundColor: colors.surface,
+  },
+  title: { ...type.display, color: colors.text, textAlign: 'center', marginTop: spacing.lg, paddingHorizontal: spacing.md },
+  infoCard: {
+    flexDirection: 'row',
+    marginTop: spacing.md,
+    marginHorizontal: spacing.md,
+    backgroundColor: colors.surface,
     borderWidth: 1,
     borderColor: colors.border,
-    paddingHorizontal: 16,
-    paddingVertical: 10,
+    borderRadius: radius.md,
+    paddingVertical: spacing.md,
+  },
+  infoCol: { flex: 1, alignItems: 'center', gap: 2 },
+  infoDivider: { width: 1, backgroundColor: colors.border },
+  infoValue: { ...type.body, color: colors.text, fontWeight: '700' },
+  infoLabel: { ...type.caption, color: colors.textFaint, fontSize: 10, letterSpacing: 0.5 },
+  langRow: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm, marginHorizontal: spacing.md, marginTop: spacing.md },
+  langPill: {
+    borderWidth: 1,
+    borderColor: colors.border,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
     borderRadius: radius.pill,
     backgroundColor: colors.surface,
   },
-  langPillActive: { borderColor: colors.gold, backgroundColor: 'rgba(212,175,55,0.12)' },
-  langText: { ...type.body, color: colors.textMuted, fontWeight: '600' },
+  langPillActive: { borderColor: colors.gold, backgroundColor: 'rgba(230,51,43,0.12)' },
+  langText: { ...type.caption, color: colors.textMuted, fontWeight: '700' },
   langTextActive: { color: colors.gold },
-  unavailableNote: { ...type.caption, color: colors.textFaint, marginHorizontal: spacing.md, marginTop: spacing.sm },
-  trackCard: {
+  trackPillRow: { flexDirection: 'row', justifyContent: 'center', gap: spacing.sm, marginTop: spacing.md },
+  trackPill: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: spacing.md,
-    marginHorizontal: spacing.md,
-    marginBottom: spacing.sm,
-    padding: spacing.md,
-    borderRadius: radius.md,
-    backgroundColor: colors.surface,
+    gap: 4,
     borderWidth: 1,
-    borderColor: colors.border,
+    borderColor: colors.gold,
+    paddingHorizontal: 12,
+    paddingVertical: 5,
+    borderRadius: radius.pill,
+    backgroundColor: 'rgba(230,51,43,0.1)',
   },
-  trackCardDisabled: { opacity: 0.5 },
-  trackIcon: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
+  trackPillOff: { borderColor: colors.border, backgroundColor: 'transparent' },
+  trackPillText: { ...type.caption, color: colors.gold, fontWeight: '800', fontSize: 11 },
+  trackPillTextOff: { color: colors.textFaint },
+  downloadErrorWrap: { alignItems: 'center', gap: spacing.xs, marginHorizontal: spacing.md, marginTop: spacing.lg },
+  downloadErrorText: { ...type.caption, color: colors.danger, textAlign: 'center' },
+  retryInlineText: { ...type.body, color: colors.gold, fontWeight: '700' },
+  progressTrack: {
+    height: 44,
+    marginHorizontal: spacing.md,
+    marginTop: spacing.lg,
+    borderRadius: radius.pill,
     backgroundColor: colors.surfaceRaised,
-    alignItems: 'center',
+    overflow: 'hidden',
     justifyContent: 'center',
   },
-  trackInfo: { flex: 1 },
-  trackTitle: { ...type.body, color: colors.text, fontWeight: '700' },
-  trackFile: { ...type.caption, color: colors.textFaint, marginTop: 2 },
-  footerBar: { padding: spacing.md, borderTopWidth: 1, borderTopColor: colors.border, backgroundColor: colors.bg },
-  downloadBtn: {
+  progressFill: { position: 'absolute', left: 0, top: 0, bottom: 0, backgroundColor: colors.gold },
+  progressText: { ...type.body, color: colors.text, fontWeight: '700', textAlign: 'center' },
+  unavailableNote: { ...type.caption, color: colors.textFaint, textAlign: 'center', marginTop: spacing.lg },
+  playBtn: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
     gap: spacing.sm,
-    backgroundColor: colors.gold,
+    marginHorizontal: spacing.md,
+    marginTop: spacing.lg,
+    backgroundColor: colors.success,
     paddingVertical: 14,
     borderRadius: radius.pill,
   },
-  downloadBtnDisabled: { backgroundColor: colors.surfaceRaised },
-  downloadBtnText: { ...type.h2, color: colors.bg },
+  playBtnText: { ...type.h2, color: colors.text, letterSpacing: 1 },
+  sectionBlock: { marginHorizontal: spacing.md, marginTop: spacing.xl },
+  sectionHeadingRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, marginBottom: spacing.sm },
+  sectionAccent: { width: 3, height: 16, borderRadius: 2, backgroundColor: colors.gold },
+  sectionHeading: { ...type.h2, color: colors.text },
+  synopsisText: { ...type.body, color: colors.textMuted, lineHeight: 21 },
+  readMore: { ...type.caption, color: colors.gold, fontWeight: '700', marginTop: spacing.xs },
+  howItem: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, marginTop: spacing.sm },
+  howText: { ...type.body, color: colors.textMuted, flex: 1 },
 });

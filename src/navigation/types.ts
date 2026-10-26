@@ -12,13 +12,11 @@ export type InfoSection =
 export type RootStackParamList = {
   Home: undefined;
   MovieDetail: { slug: string };
-  // autoSync: only true when arriving from a direct Play (MovieDetailScreen)
-  // — mic auto-sync should not fire (or even be offered) when replaying an
-  // already-downloaded title from the Downloads library.
-  Player: { slug: string; language: string; autoSync?: boolean };
+  Player: { slug: string; language: string };
   Sync: { slug: string; language: string };
   Downloads: undefined;
   Menu: undefined;
+  Settings: undefined;
   Info: { section: InfoSection };
   Login: undefined;
   Register: undefined;

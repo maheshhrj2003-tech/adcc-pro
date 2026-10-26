@@ -78,7 +78,7 @@ export default function DownloadsLibraryScreen({ navigation }: Props) {
               <TouchableOpacity
                 style={styles.playBtn}
                 activeOpacity={0.8}
-                onPress={() => navigation.navigate('Player', { slug: item.slug, language: item.languageCode })}
+                onPress={() => navigation.navigate('Sync', { slug: item.slug, language: item.languageCode })}
                 accessibilityRole="button"
                 accessibilityLabel={`Play ${item.title}`}
               >

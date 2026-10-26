@@ -8,9 +8,10 @@ import {
   TouchableOpacity,
   ScrollView,
   ImageBackground,
-  Animated,
   TextInput,
   ActivityIndicator,
+  Dimensions,
+  Animated,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
@@ -28,6 +29,11 @@ import { colors, radius, spacing, type } from '../theme';
 type Props = NativeStackScreenProps<RootStackParamList, 'Home'>;
 
 const AUTO_ADVANCE_MS = 3000;
+const SCREEN_W = Dimensions.get('window').width;
+const HERO_CARD_WIDTH = SCREEN_W * 0.72;
+const HERO_CARD_GAP = spacing.sm;
+const HERO_SNAP = HERO_CARD_WIDTH + HERO_CARD_GAP;
+const HERO_SIDE_PAD = (SCREEN_W - HERO_CARD_WIDTH) / 2;
 
 export default function HomeScreen({ navigation }: Props) {
   const insets = useSafeAreaInsets();
@@ -58,7 +64,8 @@ export default function HomeScreen({ navigation }: Props) {
   const [error, setError] = useState<string | null>(null);
 
   const [heroIndex, setHeroIndex] = useState(0);
-  const fadeAnim = useRef(new Animated.Value(1)).current;
+  const heroListRef = useRef<FlatList<ApiMovie>>(null);
+  const heroScrollX = useRef(new Animated.Value(0)).current;
 
   // GET /languages — populates the language filter row.
   useEffect(() => {
@@ -88,6 +95,7 @@ export default function HomeScreen({ navigation }: Props) {
         setPage(res.meta.current_page);
         setLastPage(res.meta.last_page);
         setHeroIndex(0);
+        if (replace) heroListRef.current?.scrollToOffset({ offset: 0, animated: false });
       } catch (e) {
         const message =
           e instanceof ApiError ? e.message : 'Could not reach the ADCC catalog. Check your connection.';
@@ -116,14 +124,17 @@ export default function HomeScreen({ navigation }: Props) {
     return () => clearTimeout(timer);
   }, [query]);
 
+  // Auto-advance slides the carousel the same way a manual swipe would —
+  // scrollToOffset with animated:true, not a fade — so the current poster
+  // visibly slides out to the left as the next one slides in, matching ADX.
   useEffect(() => {
     if (movies.length < 2) return;
     const timer = setInterval(() => {
-      Animated.sequence([
-        Animated.timing(fadeAnim, { toValue: 0, duration: 250, useNativeDriver: true }),
-        Animated.timing(fadeAnim, { toValue: 1, duration: 250, useNativeDriver: true }),
-      ]).start();
-      setHeroIndex((i) => (i + 1) % movies.length);
+      setHeroIndex((i) => {
+        const next = (i + 1) % movies.length;
+        heroListRef.current?.scrollToOffset({ offset: next * HERO_SNAP, animated: true });
+        return next;
+      });
     }, AUTO_ADVANCE_MS);
     return () => clearInterval(timer);
   }, [movies.length]);
@@ -223,21 +234,50 @@ export default function HomeScreen({ navigation }: Props) {
         <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
           {featured && (
             <>
-              <TouchableOpacity
-                activeOpacity={0.92}
-                onPress={() => navigation.navigate('MovieDetail', { slug: featured.slug })}
-                accessibilityRole="button"
-                accessibilityLabel={`Featured: ${featured.title}, ${featured.release_year}`}
-              >
-                <Animated.View style={[styles.hero, { opacity: fadeAnim }]}>
-                  <ImageBackground
-                    source={{ uri: featured.poster_url }}
-                    style={StyleSheet.absoluteFill}
-                    resizeMode="cover"
-                  />
-                  <LinearGradient colors={['transparent', 'rgba(0,0,0,0.95)']} style={StyleSheet.absoluteFill} />
-                </Animated.View>
-              </TouchableOpacity>
+              <Animated.FlatList
+                ref={heroListRef}
+                data={movies}
+                keyExtractor={(m) => String(m.id)}
+                horizontal
+                showsHorizontalScrollIndicator={false}
+                snapToInterval={HERO_SNAP}
+                decelerationRate="fast"
+                contentContainerStyle={{ paddingHorizontal: HERO_SIDE_PAD }}
+                onScroll={Animated.event([{ nativeEvent: { contentOffset: { x: heroScrollX } } }], {
+                  useNativeDriver: true,
+                })}
+                scrollEventThrottle={16}
+                onMomentumScrollEnd={(e) => {
+                  const idx = Math.round(e.nativeEvent.contentOffset.x / HERO_SNAP);
+                  setHeroIndex(Math.max(0, Math.min(movies.length - 1, idx)));
+                }}
+                renderItem={({ item, index }) => {
+                  const center = index * HERO_SNAP;
+                  const scale = heroScrollX.interpolate({
+                    inputRange: [center - HERO_SNAP, center, center + HERO_SNAP],
+                    outputRange: [0.8, 1, 0.8],
+                    extrapolate: 'clamp',
+                  });
+                  return (
+                    <TouchableOpacity
+                      activeOpacity={0.92}
+                      style={{ width: HERO_CARD_WIDTH, marginRight: HERO_CARD_GAP }}
+                      onPress={() => navigation.navigate('MovieDetail', { slug: item.slug })}
+                      accessibilityRole="button"
+                      accessibilityLabel={`${item.title}, ${item.release_year}`}
+                    >
+                      <Animated.View style={[styles.hero, { transform: [{ scale }] }]}>
+                        <ImageBackground
+                          source={{ uri: item.poster_url }}
+                          style={StyleSheet.absoluteFill}
+                          resizeMode="cover"
+                        />
+                        <LinearGradient colors={['transparent', 'rgba(0,0,0,0.85)']} style={StyleSheet.absoluteFill} />
+                      </Animated.View>
+                    </TouchableOpacity>
+                  );
+                }}
+              />
 
               <View style={styles.heroInfo}>
                 <Text style={styles.heroTitle} numberOfLines={2}>{featured.title}</Text>
@@ -373,21 +413,18 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingVertical: 8,
     borderRadius: radius.pill,
-    backgroundColor: colors.surface,
-    borderWidth: 1,
-    borderColor: colors.border,
+    backgroundColor: 'transparent',
   },
-  filterPillActive: { backgroundColor: colors.gold, borderColor: colors.gold },
-  filterText: { ...type.caption, color: colors.textMuted, fontWeight: '700' },
-  filterTextActive: { color: colors.bg },
+  filterPillActive: { backgroundColor: colors.gold },
+  filterText: { ...type.caption, color: colors.textMuted, fontWeight: '600' },
+  filterTextActive: { color: '#FFFFFF', fontWeight: '700' },
   centerFill: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: spacing.md, paddingHorizontal: spacing.xl },
   errorText: { ...type.body, color: colors.textFaint, textAlign: 'center' },
   retryBtn: { backgroundColor: colors.gold, paddingHorizontal: spacing.lg, paddingVertical: spacing.sm, borderRadius: radius.pill },
   retryText: { ...type.body, color: colors.bg, fontWeight: '700' },
   scrollContent: { paddingBottom: 140 },
   hero: {
-    height: 460,
-    marginHorizontal: spacing.md,
+    aspectRatio: 2 / 3,
     borderRadius: radius.lg,
     overflow: 'hidden',
     borderWidth: 1,

@@ -12,9 +12,10 @@ import { navigationRef } from './src/navigation/navigationRef';
 import HomeScreen from './src/screens/HomeScreen';
 import MovieDetailScreen from './src/screens/MovieDetailScreen';
 import PlayerScreen from './src/screens/PlayerScreen';
-import SyncStatusScreen from './src/screens/SyncStatusScreen';
+import SyncScreen from './src/screens/SyncScreen';
 import DownloadsLibraryScreen from './src/screens/DownloadsLibraryScreen';
 import MenuScreen from './src/screens/MenuScreen';
+import SettingsScreen from './src/screens/SettingsScreen';
 import InfoScreen from './src/screens/InfoScreen';
 import LoginScreen from './src/screens/LoginScreen';
 import RegisterScreen from './src/screens/RegisterScreen';
@@ -54,9 +55,10 @@ export default function App() {
                 <Stack.Screen name="Home" component={HomeScreen} />
                 <Stack.Screen name="MovieDetail" component={MovieDetailScreen} />
                 <Stack.Screen name="Player" component={PlayerScreen} />
-                <Stack.Screen name="Sync" component={SyncStatusScreen} />
+                <Stack.Screen name="Sync" component={SyncScreen} />
                 <Stack.Screen name="Downloads" component={DownloadsLibraryScreen} />
                 <Stack.Screen name="Menu" component={MenuScreen} />
+                <Stack.Screen name="Settings" component={SettingsScreen} />
                 <Stack.Screen name="Info" component={InfoScreen} />
                 <Stack.Screen name="Login" component={LoginScreen} />
                 <Stack.Screen name="Register" component={RegisterScreen} />

@@ -16,8 +16,8 @@ export function handleFooterNav(
     navigation.navigate('Downloads');
     return;
   }
-  if (key === 'menu') {
-    navigation.navigate('Menu');
+  if (key === 'settings') {
+    navigation.navigate('Settings');
     return;
   }
 }

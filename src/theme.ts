@@ -1,3 +1,7 @@
+// Re-themed to match the ADX reference app's red/black/green palette.
+// Token NAMES kept as "gold*" deliberately — every screen in the app
+// already references colors.gold/goldBright/goldDim, so changing just the
+// values here re-skins the whole app to red without touching every file.
 export const colors = {
   bg: '#000000',
   surface: '#0E0E0E',
@@ -6,16 +10,16 @@ export const colors = {
   text: '#FFFFFF',
   textMuted: '#A3A3A3',
   textFaint: '#6B6B6B',
-  gold: '#D4AF37',
-  goldBright: '#F2D879',
-  goldDim: '#8A6E1F',
-  success: '#4ADE80',
+  gold: '#E6332B',
+  goldBright: '#FF6259',
+  goldDim: '#7A1F1A',
+  success: '#22C55E',
   danger: '#F87171',
 };
 
 export const gradients = {
   gold: [colors.goldDim, colors.gold, colors.goldBright] as const,
-  goldHeader: ['#B8912C', '#D4AF37', '#B8912C'] as const,
+  goldHeader: ['#9E201A', '#E6332B', '#9E201A'] as const,
   overlay: ['transparent', 'rgba(0,0,0,0.95)'] as const,
   poster: ['transparent', 'rgba(0,0,0,0.9)'] as const,
 };

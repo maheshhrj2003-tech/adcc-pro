@@ -13,7 +13,7 @@ export interface FooterTab {
 const TABS: FooterTab[] = [
   { key: 'downloads', label: 'Downloads', icon: 'download-outline' },
   { key: 'home', label: 'Home', icon: 'home' },
-  { key: 'menu', label: 'Menu', icon: 'menu' },
+  { key: 'settings', label: 'Settings', icon: 'settings-outline' },
 ];
 
 interface Props {

@@ -1,17 +1,11 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, ActivityIndicator } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { Audio, AVPlaybackStatus } from 'expo-av';
-import * as FileSystem from 'expo-file-system';
+import { Audio } from 'expo-av';
 import * as ScreenOrientation from 'expo-screen-orientation';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../navigation/types';
-import { getDownloadRecord, saveDownloadRecord, downloadMovieLanguageTracks, DownloadRecord } from '../api/downloads';
-import { getMovieBySlug } from '../api/catalog';
-import { syncTrack } from '../api/sync';
-import { ApiError } from '../api/types';
-import { parseSrt, SrtCue } from '../utils/srt';
 import { usePreferences, CAPTION_SIZE_PT, CAPTION_COLOR_HEX } from '../preferences/PreferencesContext';
 import { useNowPlaying } from '../playback/NowPlayingContext';
 import CaptionSizeDrag from '../components/CaptionSizeDrag';
@@ -19,23 +13,19 @@ import { colors, radius, spacing, type } from '../theme';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Player'>;
 
+// This screen only plays — preparing the download happens on MovieDetail,
+// and the mic sync step happens on its own Sync screen before this one is
+// ever reached. Player just renders whatever NowPlayingContext already has
+// attached (restoring it if it was minimized) and lets you watch/adjust.
 export default function PlayerScreen({ route, navigation }: Props) {
-  const { slug, language, autoSync } = route.params;
+  const { slug, language } = route.params;
   const insets = useSafeAreaInsets();
-  const { prefs, loading: prefsLoading } = usePreferences();
+  const { prefs } = usePreferences();
   const now = useNowPlaying();
 
-  // A ref mirror of the latest context value, read only from the unmount
-  // cleanup below — that effect has empty deps (it must only fire on a true
-  // unmount, not on every context update), so it can't close over `now`
-  // directly without going stale. Updating a ref on every render keeps it
-  // current without re-subscribing the effect.
   const nowRef = useRef(now);
   nowRef.current = now;
 
-  // This screen only "owns" the UI for this slug+language while the shared
-  // session actually matches it — otherwise another title may be mid
-  // hand-off (or still minimized) and we shouldn't render its data here.
   const sessionActive = now.matches(slug, language);
   const record = sessionActive ? now.record : null;
   const cues = sessionActive ? now.cues : [];
@@ -45,25 +35,23 @@ export default function PlayerScreen({ route, navigation }: Props) {
   const playing = sessionActive ? now.playing : false;
   const adOn = sessionActive ? now.adOn : true;
 
-  const [loading, setLoading] = useState(true);
   const manualClock = useRef<ReturnType<typeof setInterval> | null>(null);
-
-  // This is the only player view — a full black, captions-only screen for
-  // watching without a distracting UI or screen glow. There is no separate
-  // "normal" player screen; this is shown from the moment the title is
-  // ready, through sync, and for as long as the user is watching.
   const [theaterLocked, setTheaterLocked] = useState(false);
-  // Shared across both the normal and theater views, so caption size stays
-  // consistent whichever screen you adjust it from or switch between.
   const [captionBoost, setCaptionBoost] = useState(0);
 
-  // The app is locked to portrait everywhere else (app.json), but this
-  // screen unlocks rotation so theater mode can go fullscreen landscape
-  // when the phone is rotated (matching the reference ADX app) — rotation
-  // no longer exits theater mode, it just lets the black/captions view
-  // fill a landscape screen. Exiting is now an explicit close button.
-  // Restore the app-wide portrait lock on leaving so no other screen is
-  // affected.
+  // No live session matches this slug+language — this screen has nothing to
+  // play. Can happen from a stale deep link; send back through Sync, which
+  // knows how to get a session attached (or will bounce further back if the
+  // title isn't even downloaded).
+  useEffect(() => {
+    if (!now.matches(slug, language)) {
+      navigation.replace('Sync', { slug, language });
+    } else {
+      now.restore();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   useEffect(() => {
     ScreenOrientation.unlockAsync().catch(() => {});
     return () => {
@@ -71,11 +59,9 @@ export default function PlayerScreen({ route, navigation }: Props) {
     };
   }, []);
 
-  // Leaving this screen (back button, swipe-back, hardware back) hands the
-  // live session off to the floating mini-player instead of stopping it —
-  // only if this screen actually owns a live session for this title. This
-  // must be a separate effect with empty deps so its cleanup runs on true
-  // unmount only, never when unrelated state changes mid-session.
+  // Leaving this screen hands the live session off to the floating
+  // mini-player instead of stopping it — empty deps so this only fires on a
+  // true unmount, not on every context update mid-session.
   useEffect(() => {
     return () => {
       if (nowRef.current.matches(slug, language)) {
@@ -85,10 +71,6 @@ export default function PlayerScreen({ route, navigation }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Without this, expo-av can report isPlaying: true and keep advancing
-  // playback position (which is what drives the captions) while producing
-  // no actual audible output — position tracking and audible sound are
-  // decoupled unless the audio session/mode is explicitly configured.
   useEffect(() => {
     Audio.setAudioModeAsync({
       allowsRecordingIOS: false,
@@ -99,147 +81,8 @@ export default function PlayerScreen({ route, navigation }: Props) {
     }).catch(() => {});
   }, []);
 
-  // Prepare this title for playback: reuse a previously downloaded copy if
-  // one exists, otherwise download it now — pressing Play is the only step,
-  // there's no separate Download screen to click through first. Waits for
-  // accessibility preferences to finish loading first, so the AD mute state
-  // reflects the actual saved preference, not a stale default.
-  const [prepError, setPrepError] = useState<string | null>(null);
-  const [prepProgress, setPrepProgress] = useState({ cc: 0, ad: 0 });
-  const [preparing, setPreparing] = useState(false);
-  // True only when this mount actually built a fresh session (as opposed to
-  // restoring one that was already live/minimized) — gates auto-sync below
-  // so re-opening something you're already watching never kicks off a new
-  // 15-second mic recording on top of it.
-  const freshLoadRef = useRef(false);
-
-  useEffect(() => {
-    if (prefsLoading) return;
-    let cancelled = false;
-
-    (async () => {
-      // Same title+language already live (playing or minimized) — just
-      // bring it back into view, don't re-download or re-create the sound.
-      if (now.matches(slug, language)) {
-        now.restore();
-        setLoading(false);
-        return;
-      }
-
-      // A different title is live — stop it before starting a new one, so
-      // two movies never play over each other.
-      if (now.record) {
-        await now.stop();
-      }
-      if (cancelled) return;
-
-      setLoading(true);
-      let rec = await getDownloadRecord(slug, language);
-      if (cancelled) return;
-
-      if (!rec) {
-        try {
-          setPreparing(true);
-          if (__DEV__) console.log('[player] not downloaded yet — downloading now for', slug, language);
-          const movie = await getMovieBySlug(slug);
-          if (cancelled) return;
-          const track = movie.languages.find((l) => l.language.code === language);
-          const result = await downloadMovieLanguageTracks(slug, language, {
-            onCcProgress: (f) => !cancelled && setPrepProgress((p) => ({ ...p, cc: f })),
-            onAdProgress: (f) => !cancelled && setPrepProgress((p) => ({ ...p, ad: f })),
-          });
-          if (cancelled) return;
-          rec = {
-            slug,
-            trackId: result.trackId,
-            title: movie.title,
-            posterUrl: movie.poster_url,
-            languageCode: language,
-            languageName: track?.language.name ?? language,
-            ccPath: result.ccPath,
-            adPath: result.adPath,
-            runtimeSeconds: result.runtimeSeconds,
-            downloadedAt: new Date().toISOString(),
-          };
-          await saveDownloadRecord(rec);
-        } catch (e) {
-          if (!cancelled) {
-            setPrepError(e instanceof Error ? e.message : 'Could not prepare this title for playback.');
-            setLoading(false);
-          }
-          return;
-        } finally {
-          if (!cancelled) setPreparing(false);
-        }
-      }
-
-      if (cancelled) return;
-
-      let parsedCues: SrtCue[] = [];
-      if (rec.ccPath) {
-        try {
-          const content = await FileSystem.readAsStringAsync(rec.ccPath);
-          parsedCues = parseSrt(content);
-        } catch {
-          parsedCues = [];
-        }
-      }
-      if (cancelled) return;
-
-      let loadedSound: Audio.Sound | null = null;
-      let initialAdOn = true;
-      if (rec.adPath) {
-        try {
-          initialAdOn = prefs.adEnabledByDefault;
-          if (__DEV__) console.log('[player] loading AD sound from', rec.adPath, 'isMuted:', !initialAdOn);
-          const { sound: loaded } = await Audio.Sound.createAsync(
-            { uri: rec.adPath },
-            { shouldPlay: false, isMuted: !initialAdOn, volume: 1.0 }
-          );
-          if (cancelled) {
-            loaded.unloadAsync();
-            return;
-          }
-          if (__DEV__) console.log('[player] AD sound loaded OK');
-          loaded.setOnPlaybackStatusUpdate((status: AVPlaybackStatus) => {
-            if (!status.isLoaded) {
-              if (__DEV__ && 'error' in status && status.error) console.log('[player] playback error:', status.error);
-              return;
-            }
-            now.setPositionSec(status.positionMillis / 1000);
-            if (status.durationMillis) now.setDurationSec(status.durationMillis / 1000);
-            now.setPlaying(status.isPlaying);
-          });
-          loadedSound = loaded;
-        } catch (e) {
-          // AD audio failed to load — captions still work off the manual clock.
-          if (__DEV__) console.log('[player] AD sound FAILED to load:', e);
-        }
-      }
-
-      if (cancelled) return;
-      now.attach(rec, loadedSound, parsedCues, initialAdOn);
-      if (!loadedSound) {
-        now.setDurationSec(rec.runtimeSeconds || (parsedCues.length ? parsedCues[parsedCues.length - 1].end : 60));
-      }
-      freshLoadRef.current = true;
-
-      setLoading(false);
-    })();
-
-    return () => {
-      cancelled = true;
-      if (manualClock.current) clearInterval(manualClock.current);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [slug, language, prefsLoading]);
-
   const hasAudio = !!record?.adPath;
 
-  // When there's no AD audio to anchor to, drive captions off a manual clock
-  // the user starts themselves — this only runs while the full screen is
-  // mounted, so a caption-only session pauses its clock while minimized
-  // (there's no audio playing in the background to keep it worth ticking).
   useEffect(() => {
     if (!sessionActive || hasAudio) return;
     if (playing) {
@@ -258,7 +101,6 @@ export default function PlayerScreen({ route, navigation }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [playing, hasAudio, durationSec, sessionActive]);
 
-  // Keep the loaded sound's mute state in sync with the on-screen AD toggle.
   useEffect(() => {
     sound?.setIsMutedAsync(!adOn);
   }, [adOn, sound]);
@@ -270,28 +112,15 @@ export default function PlayerScreen({ route, navigation }: Props) {
 
   const togglePlay = async () => {
     if (sound) {
-      if (playing) {
-        if (__DEV__) console.log('[player] pauseAsync');
-        await sound.pauseAsync();
-      } else {
-        if (__DEV__) console.log('[player] playAsync, adOn:', adOn);
-        await sound.playAsync();
-      }
+      if (playing) await sound.pauseAsync();
+      else await sound.playAsync();
     } else {
-      if (__DEV__) console.log('[player] no sound loaded — using manual clock only');
       now.setPlaying((p) => !p);
     }
   };
 
-  // Manual re-sync — the app-side action the API doc calls out (no server
-  // endpoint for this; it's purely a client concern). This actually seeks
-  // the master clock (the real audio position when AD exists, or the
-  // manual clock when it doesn't) by the nudge amount, so captions — which
-  // are derived from that same clock below — move together with the audio
-  // rather than drifting apart from it.
   const nudgeSync = async (deltaMs: number) => {
     const targetSec = Math.max(0, Math.min(durationSec || Infinity, positionSec + deltaMs / 1000));
-    if (__DEV__) console.log('[player] nudging sync by', deltaMs, 'ms -> seeking to', targetSec, 's');
     if (sound) {
       await sound.setPositionAsync(targetSec * 1000);
     } else {
@@ -299,268 +128,21 @@ export default function PlayerScreen({ route, navigation }: Props) {
     }
   };
 
-  // Mic-based auto-sync — POST /tracks/{id}/sync. Records a short mic
-  // sample, uploads it, and if the server finds a confident match, seeks
-  // playback to that point. Not part of the original API reference doc;
-  // confirmed live and verified directly against the backend on 2026-09-28.
-  const RECORDING_SECONDS = 15;
-  const [micState, setMicState] = useState<'idle' | 'requesting' | 'recording' | 'matching'>('idle');
-  const [countdown, setCountdown] = useState(RECORDING_SECONDS);
-  const [micMessage, setMicMessage] = useState<string | null>(null);
-  const recordingRef = useRef<Audio.Recording | null>(null);
-  const countdownTimer = useRef<ReturnType<typeof setInterval> | null>(null);
-  const syncAutoDismissTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  const startAutoSync = async () => {
-    if (!record) return;
-    if (syncAutoDismissTimer.current) clearTimeout(syncAutoDismissTimer.current);
-    setMicMessage(null);
-
-    setMicState('requesting');
-    const perm = await Audio.requestPermissionsAsync();
-    if (!perm.granted) {
-      setMicState('idle');
-      setMicMessage('Microphone permission is required to auto-sync.');
-      return;
-    }
-
-    // Pausing our own AD playback while recording avoids picking up our own
-    // narration through the mic instead of the theater/disc audio we're
-    // actually trying to match against.
-    const wasPlaying = playing;
-    if (sound && wasPlaying) {
-      await sound.pauseAsync();
-    }
-
-    try {
-      await Audio.setAudioModeAsync({
-        allowsRecordingIOS: true,
-        playsInSilentModeIOS: true,
-        staysActiveInBackground: false,
-      });
-
-      const { recording } = await Audio.Recording.createAsync(Audio.RecordingOptionsPresets.HIGH_QUALITY);
-      recordingRef.current = recording;
-      const recordingStartedAt = Date.now();
-
-      setMicState('recording');
-      setCountdown(RECORDING_SECONDS);
-      countdownTimer.current = setInterval(() => {
-        setCountdown((c) => (c > 1 ? c - 1 : c));
-      }, 1000);
-
-      await new Promise((resolve) => setTimeout(resolve, RECORDING_SECONDS * 1000));
-
-      if (countdownTimer.current) clearInterval(countdownTimer.current);
-      await recording.stopAndUnloadAsync();
-      // Hand the mic back to playback-only mode so AD audio quality/routing
-      // isn't affected by the recording-capable session afterward.
-      await Audio.setAudioModeAsync({ allowsRecordingIOS: false, playsInSilentModeIOS: true, shouldDuckAndroid: true });
-
-      const uri = recording.getURI();
-      recordingRef.current = null;
-      if (!uri) throw new Error('Recording produced no file.');
-
-      setMicState('matching');
-      const result = await syncTrack(record.trackId, uri);
-
-      // Correct for how long the record → upload → match round trip took —
-      // offset_seconds reflects where the film was when recording *started*.
-      const elapsedSec = (Date.now() - recordingStartedAt) / 1000;
-
-      FileSystem.deleteAsync(uri, { idempotent: true }).catch(() => {});
-
-      if (result.matched) {
-        const correctedSec = Math.max(0, result.offset_seconds + elapsedSec);
-        if (sound) {
-          await sound.setPositionAsync(correctedSec * 1000);
-        } else {
-          now.setPositionSec(correctedSec);
-        }
-        setMicMessage('Synced!');
-        // A match needs no manual confirmation — the movie's already
-        // playing behind the overlay by this point, so just show "Synced!"
-        // briefly and auto-dismiss. A failed match still needs the manual
-        // Continue, since there's no automatic next step to walk into.
-        if (syncAutoDismissTimer.current) clearTimeout(syncAutoDismissTimer.current);
-        syncAutoDismissTimer.current = setTimeout(() => setMicMessage(null), 1300);
-      } else {
-        setMicMessage("Couldn't find a confident match — try holding the phone closer to the audio source and try again.");
-      }
-
-      // Sync is meant to be hands-off end to end — whether or not a match
-      // was found, playback should already be underway by the time it's
-      // done, never left paused waiting for a manual Play tap.
-      if (sound) {
-        await sound.playAsync();
-      } else {
-        now.setPlaying(true);
-      }
-    } catch (e) {
-      if (countdownTimer.current) clearInterval(countdownTimer.current);
-      if (e instanceof ApiError && e.status === 422) {
-        setMicMessage(e.message);
-      } else {
-        setMicMessage('Auto-sync failed. Check your connection and try again.');
-      }
-      await Audio.setAudioModeAsync({ allowsRecordingIOS: false, playsInSilentModeIOS: true, shouldDuckAndroid: true }).catch(() => {});
-    } finally {
-      setMicState('idle');
-    }
-  };
-
-  useEffect(() => {
-    return () => {
-      if (countdownTimer.current) clearInterval(countdownTimer.current);
-      if (syncAutoDismissTimer.current) clearTimeout(syncAutoDismissTimer.current);
-      recordingRef.current?.stopAndUnloadAsync().catch(() => {});
-    };
-  }, []);
-
-  // Pressing Play directly (from the movie detail screen) is the only step
-  // now — once the title is prepared and loaded, kick off the mic auto-sync
-  // automatically instead of waiting for a manual button tap, matching the
-  // reference app's flow of Play -> sync -> "Synced!" -> theater mode.
-  // Replaying an already-downloaded title from the Downloads library
-  // (autoSync not set) never triggers this — sync is a "direct play" thing.
-  const autoSyncFired = useRef(false);
-  useEffect(() => {
-    if (!autoSync) return;
-    if (!freshLoadRef.current) return;
-    if (!loading && record && !autoSyncFired.current) {
-      autoSyncFired.current = true;
-      startAutoSync();
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loading, record]);
-
-  // The full-screen sync overlay covers the in-progress states AND the
-  // just-finished result (so there's a moment to read "Synced!" or the
-  // no-match message and hit Resync) — it clears once the user dismisses it.
-  const showSyncOverlay = micState !== 'idle' || micMessage !== null;
-
   const currentCue = useMemo(
     () => cues.find((c) => positionSec >= c.start && positionSec < c.end),
     [cues, positionSec]
   );
 
-  if (prepError) {
-    return (
-      <View style={[styles.screen, styles.center]}>
-        <Ionicons name="alert-circle-outline" size={32} color={colors.textFaint} />
-        <Text style={styles.errorText}>{prepError}</Text>
-        <TouchableOpacity
-          style={styles.backBtnFallback}
-          onPress={() => navigation.goBack()}
-          accessibilityRole="button"
-          accessibilityLabel="Go back"
-        >
-          <Text style={styles.backBtnFallbackText}>Go Back</Text>
-        </TouchableOpacity>
-      </View>
-    );
-  }
-
-  if (loading) {
-    return (
-      <View style={[styles.screen, styles.center]}>
-        <ActivityIndicator color={colors.gold} size="large" />
-        {preparing && (
-          <>
-            <Text style={styles.prepText}>Preparing your accessibility tracks…</Text>
-            <Text style={styles.prepSubtext}>
-              {Math.round(((prepProgress.cc + prepProgress.ad) / 2) * 100)}%
-            </Text>
-          </>
-        )}
-      </View>
-    );
-  }
-
   if (!record) {
     return (
       <View style={[styles.screen, styles.center]}>
-        <Ionicons name="alert-circle-outline" size={32} color={colors.textFaint} />
-        <Text style={styles.errorText}>This title couldn't be prepared for playback.</Text>
-        <TouchableOpacity
-          style={styles.backBtnFallback}
-          onPress={() => navigation.goBack()}
-          accessibilityRole="button"
-          accessibilityLabel="Go back"
-        >
-          <Text style={styles.backBtnFallbackText}>Go Back</Text>
-        </TouchableOpacity>
+        <ActivityIndicator color={colors.gold} size="large" />
       </View>
     );
   }
 
-  const syncOverlay = showSyncOverlay && (
-    <View style={styles.syncOverlay}>
-      <TouchableOpacity
-        style={styles.syncOverlayClose}
-        onPress={() => setMicMessage(null)}
-        disabled={micState !== 'idle'}
-        accessibilityRole="button"
-        accessibilityLabel="Dismiss sync screen"
-      >
-        <Ionicons name="close" size={22} color={micState === 'idle' ? colors.text : colors.textFaint} />
-      </TouchableOpacity>
-
-      <View style={styles.syncOverlayBody}>
-        <View style={styles.syncOverlayIconWrap}>
-          <Ionicons name="mic" size={36} color={colors.gold} />
-        </View>
-
-        {micState === 'requesting' && (
-          <>
-            <ActivityIndicator color={colors.gold} size="large" />
-            <Text style={styles.syncOverlayTitle}>Requesting microphone permission…</Text>
-          </>
-        )}
-        {micState === 'recording' && (
-          <>
-            <View style={styles.micRecordingDotLg} />
-            <Text style={styles.syncOverlayTitle}>Listening…</Text>
-            <Text style={styles.syncOverlaySubtitle}>
-              {countdown}s remaining — hold your phone up to the movie's audio
-            </Text>
-          </>
-        )}
-        {micState === 'matching' && (
-          <>
-            <ActivityIndicator color={colors.gold} size="large" />
-            <Text style={styles.syncOverlayTitle}>Matching against the film…</Text>
-          </>
-        )}
-        {micState === 'idle' && micMessage && <Text style={styles.syncOverlayTitle}>{micMessage}</Text>}
-      </View>
-
-      <View style={[styles.syncOverlayActions, { paddingBottom: insets.bottom + spacing.md }]}>
-        <TouchableOpacity
-          style={[styles.syncOverlayResyncBtn, micState !== 'idle' && styles.syncOverlayBtnDisabled]}
-          onPress={startAutoSync}
-          disabled={micState !== 'idle'}
-          accessibilityRole="button"
-          accessibilityLabel="Resync"
-        >
-          <Ionicons name="refresh" size={18} color={colors.bg} />
-          <Text style={styles.syncOverlayResyncText}>Resync</Text>
-        </TouchableOpacity>
-        {micState === 'idle' && (
-          <TouchableOpacity
-            style={styles.syncOverlayContinueBtn}
-            onPress={() => setMicMessage(null)}
-            accessibilityRole="button"
-            accessibilityLabel="Continue watching"
-          >
-            <Text style={styles.syncOverlayContinueText}>Continue</Text>
-          </TouchableOpacity>
-        )}
-      </View>
-    </View>
-  );
-
   const captionSize = CAPTION_SIZE_PT[prefs.captionSize] + captionBoost;
+
   return (
     <View style={styles.theaterScreen}>
       {!theaterLocked && (
@@ -624,9 +206,9 @@ export default function PlayerScreen({ route, navigation }: Props) {
               <CaptionSizeDrag value={captionBoost} onChange={setCaptionBoost} />
               <TouchableOpacity
                 style={styles.theaterBtnSmall}
-                onPress={startAutoSync}
+                onPress={() => navigation.navigate('Sync', { slug, language })}
                 accessibilityRole="button"
-                accessibilityLabel="Resync using the microphone"
+                accessibilityLabel="Resync"
               >
                 <Ionicons name="mic" size={16} color={colors.gold} />
               </TouchableOpacity>
@@ -668,20 +250,13 @@ export default function PlayerScreen({ route, navigation }: Props) {
           </>
         )}
       </View>
-
-      {syncOverlay}
     </View>
   );
 }
 
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: colors.bg },
-  center: { alignItems: 'center', justifyContent: 'center', gap: spacing.md, paddingHorizontal: spacing.xl },
-  errorText: { ...type.body, color: colors.textFaint, textAlign: 'center' },
-  backBtnFallback: { backgroundColor: colors.gold, paddingHorizontal: spacing.lg, paddingVertical: spacing.sm, borderRadius: radius.pill },
-  backBtnFallbackText: { ...type.body, color: colors.bg, fontWeight: '700' },
-  prepText: { ...type.body, color: colors.textMuted, marginTop: spacing.md },
-  prepSubtext: { ...type.caption, color: colors.gold, fontWeight: '700', marginTop: spacing.xs },
+  center: { alignItems: 'center', justifyContent: 'center' },
   theaterScreen: { flex: 1, backgroundColor: '#000000', justifyContent: 'space-between' },
   theaterTopBar: {
     position: 'absolute',
@@ -769,56 +344,4 @@ const styles = StyleSheet.create({
     borderRadius: radius.pill,
   },
   adBadgeOffText: { ...type.caption, color: colors.textFaint, fontWeight: '700', fontSize: 10 },
-  syncOverlay: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    backgroundColor: 'rgba(0,0,0,0.94)',
-    justifyContent: 'space-between',
-    zIndex: 20,
-  },
-  syncOverlayClose: {
-    alignSelf: 'flex-end',
-    width: 40,
-    height: 40,
-    margin: spacing.md,
-    borderRadius: 20,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  syncOverlayBody: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: spacing.md, paddingHorizontal: spacing.xl },
-  syncOverlayIconWrap: {
-    width: 72,
-    height: 72,
-    borderRadius: 36,
-    borderWidth: 1,
-    borderColor: colors.goldDim,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: spacing.sm,
-  },
-  syncOverlayTitle: { ...type.h2, color: colors.text, textAlign: 'center' },
-  syncOverlaySubtitle: { ...type.body, color: colors.textMuted, textAlign: 'center' },
-  micRecordingDotLg: {
-    width: 16,
-    height: 16,
-    borderRadius: 8,
-    backgroundColor: colors.danger,
-  },
-  syncOverlayActions: { padding: spacing.lg, gap: spacing.sm },
-  syncOverlayResyncBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: spacing.sm,
-    backgroundColor: colors.gold,
-    paddingVertical: 14,
-    borderRadius: radius.pill,
-  },
-  syncOverlayBtnDisabled: { opacity: 0.4 },
-  syncOverlayResyncText: { ...type.body, color: colors.bg, fontWeight: '700' },
-  syncOverlayContinueBtn: { alignItems: 'center', paddingVertical: 10 },
-  syncOverlayContinueText: { ...type.body, color: colors.textMuted, fontWeight: '600' },
 });
