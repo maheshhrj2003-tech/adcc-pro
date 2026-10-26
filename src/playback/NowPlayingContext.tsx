@@ -4,10 +4,9 @@ import type { DownloadRecord } from '../api/downloads';
 import type { SrtCue } from '../utils/srt';
 
 // Holds whatever is currently playing app-wide, independent of which screen
-// is mounted. PlayerScreen is just a "view" over this — when it unmounts
-// (back button, swipe-back, navigating elsewhere) it hands the live session
-// off here instead of tearing it down, which is what lets the floating
-// mini-player keep the movie going while you browse the rest of the app.
+// is mounted. A session only exists while PlayerScreen (or the Sync screen
+// that feeds it) is actually on screen — backing out of Player stops it via
+// stop() below, there's no background/minimized continuation.
 interface NowPlayingValue {
   record: DownloadRecord | null;
   sound: Audio.Sound | null;
@@ -16,17 +15,12 @@ interface NowPlayingValue {
   durationSec: number;
   playing: boolean;
   adOn: boolean;
-  // true = the floating mini-player is showing; false = the full
-  // PlayerScreen owns the UI for this session right now.
-  minimized: boolean;
   setPositionSec: React.Dispatch<React.SetStateAction<number>>;
   setDurationSec: React.Dispatch<React.SetStateAction<number>>;
   setPlaying: React.Dispatch<React.SetStateAction<boolean>>;
   setAdOn: React.Dispatch<React.SetStateAction<boolean>>;
   matches: (slug: string, languageCode: string) => boolean;
   attach: (record: DownloadRecord, sound: Audio.Sound | null, cues: SrtCue[], initialAdOn: boolean) => void;
-  minimize: () => void;
-  restore: () => void;
   stop: () => Promise<void>;
 }
 
@@ -39,7 +33,6 @@ export function NowPlayingProvider({ children }: { children: React.ReactNode }) 
   const [durationSec, setDurationSec] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [adOn, setAdOn] = useState(true);
-  const [minimized, setMinimized] = useState(false);
 
   // A ref, not state — the Audio.Sound instance keeps playing in the
   // background regardless of re-renders; consumers read it straight off
@@ -61,13 +54,9 @@ export function NowPlayingProvider({ children }: { children: React.ReactNode }) 
       setDurationSec(0);
       setPlaying(false);
       setAdOn(initialAdOn);
-      setMinimized(false);
     },
     []
   );
-
-  const minimize = useCallback(() => setMinimized(true), []);
-  const restore = useCallback(() => setMinimized(false), []);
 
   const stop = useCallback(async () => {
     const s = soundRef.current;
@@ -81,7 +70,6 @@ export function NowPlayingProvider({ children }: { children: React.ReactNode }) 
     setPositionSec(0);
     setDurationSec(0);
     setPlaying(false);
-    setMinimized(false);
   }, []);
 
   return (
@@ -94,15 +82,12 @@ export function NowPlayingProvider({ children }: { children: React.ReactNode }) 
         durationSec,
         playing,
         adOn,
-        minimized,
         setPositionSec,
         setDurationSec,
         setPlaying,
         setAdOn,
         matches,
         attach,
-        minimize,
-        restore,
         stop,
       }}
     >

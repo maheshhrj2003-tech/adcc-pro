@@ -256,7 +256,7 @@ export default function MovieDetailScreen({ route, navigation }: Props) {
                 size={13}
                 color={selectedTrack.downloads.ad ? colors.gold : colors.textFaint}
               />
-              <Text style={[styles.trackPillText, !selectedTrack.downloads.ad && styles.trackPillTextOff]}>ADX</Text>
+              <Text style={[styles.trackPillText, !selectedTrack.downloads.ad && styles.trackPillTextOff]}>AD</Text>
             </View>
             <View style={[styles.trackPill, !selectedTrack.downloads.cc && styles.trackPillOff]}>
               <Ionicons

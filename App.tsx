@@ -7,8 +7,8 @@ import type { RootStackParamList } from './src/navigation/types';
 import { AuthProvider } from './src/auth/AuthContext';
 import { PreferencesProvider } from './src/preferences/PreferencesContext';
 import { NowPlayingProvider } from './src/playback/NowPlayingContext';
-import FloatingMiniPlayer from './src/components/FloatingMiniPlayer';
 import { navigationRef } from './src/navigation/navigationRef';
+import WelcomeScreen from './src/screens/WelcomeScreen';
 import HomeScreen from './src/screens/HomeScreen';
 import MovieDetailScreen from './src/screens/MovieDetailScreen';
 import PlayerScreen from './src/screens/PlayerScreen';
@@ -49,9 +49,10 @@ export default function App() {
             <NavigationContainer ref={navigationRef} theme={navTheme}>
               <StatusBar style="light" />
               <Stack.Navigator
-                initialRouteName="Home"
+                initialRouteName="Welcome"
                 screenOptions={{ headerShown: false, contentStyle: { backgroundColor: colors.bg } }}
               >
+                <Stack.Screen name="Welcome" component={WelcomeScreen} />
                 <Stack.Screen name="Home" component={HomeScreen} />
                 <Stack.Screen name="MovieDetail" component={MovieDetailScreen} />
                 <Stack.Screen name="Player" component={PlayerScreen} />
@@ -69,7 +70,6 @@ export default function App() {
                 <Stack.Screen name="AccessibilitySettings" component={AccessibilitySettingsScreen} />
               </Stack.Navigator>
             </NavigationContainer>
-            <FloatingMiniPlayer />
           </NowPlayingProvider>
         </PreferencesProvider>
       </AuthProvider>

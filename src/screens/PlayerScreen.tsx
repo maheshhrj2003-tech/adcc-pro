@@ -16,7 +16,7 @@ type Props = NativeStackScreenProps<RootStackParamList, 'Player'>;
 // This screen only plays — preparing the download happens on MovieDetail,
 // and the mic sync step happens on its own Sync screen before this one is
 // ever reached. Player just renders whatever NowPlayingContext already has
-// attached (restoring it if it was minimized) and lets you watch/adjust.
+// attached and lets you watch/adjust; going back ends the session.
 export default function PlayerScreen({ route, navigation }: Props) {
   const { slug, language } = route.params;
   const insets = useSafeAreaInsets();
@@ -46,8 +46,6 @@ export default function PlayerScreen({ route, navigation }: Props) {
   useEffect(() => {
     if (!now.matches(slug, language)) {
       navigation.replace('Sync', { slug, language });
-    } else {
-      now.restore();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -59,13 +57,13 @@ export default function PlayerScreen({ route, navigation }: Props) {
     };
   }, []);
 
-  // Leaving this screen hands the live session off to the floating
-  // mini-player instead of stopping it — empty deps so this only fires on a
-  // true unmount, not on every context update mid-session.
+  // Leaving this screen (back button, swipe-back) ends the session outright
+  // — no background mini-player continuation. Empty deps so this only fires
+  // on a true unmount, not on every context update mid-session.
   useEffect(() => {
     return () => {
       if (nowRef.current.matches(slug, language)) {
-        nowRef.current.minimize();
+        nowRef.current.stop();
       }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps

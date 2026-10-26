@@ -10,6 +10,7 @@ export type InfoSection =
   | 'privacy-policy';
 
 export type RootStackParamList = {
+  Welcome: undefined;
   Home: undefined;
   MovieDetail: { slug: string };
   Player: { slug: string; language: string };

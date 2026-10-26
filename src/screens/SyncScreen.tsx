@@ -36,12 +36,11 @@ export default function SyncScreen({ route, navigation }: Props) {
   const recordingRef = useRef<Audio.Recording | null>(null);
   const countdownTimer = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  // If this exact title+language is already live elsewhere (minimized
-  // mini-player, or re-tapping Play on something already playing), there's
-  // nothing to sync — just go straight to the player.
+  // If this exact title+language is already live in this same navigation
+  // stack (e.g. tapping Resync from Player, which pushes here without
+  // unmounting it), there's nothing to sync — just go straight to the player.
   useEffect(() => {
     if (now.matches(slug, language)) {
-      now.restore();
       navigation.replace('Player', { slug, language });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
