@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { View, Text, StyleSheet, TextInput, TouchableOpacity, ActivityIndicator, KeyboardAvoidingView, Platform, ScrollView } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../navigation/types';
 import ChromeHeader from '../components/ChromeHeader';
@@ -15,6 +16,8 @@ export default function RegisterScreen({ navigation }: Props) {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [confirm, setConfirm] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
+  const [showConfirm, setShowConfirm] = useState(false);
   const [loading, setLoading] = useState(false);
   const [fieldErrors, setFieldErrors] = useState<Record<string, string[]>>({});
   const [formError, setFormError] = useState<string | null>(null);
@@ -73,29 +76,51 @@ export default function RegisterScreen({ navigation }: Props) {
           )}
 
           <Text style={styles.label} nativeID="passwordLabel">Password</Text>
-          <TextInput
-            style={styles.input}
-            value={password}
-            onChangeText={setPassword}
-            secureTextEntry
-            placeholder="••••••••"
-            placeholderTextColor={colors.textFaint}
-            accessibilityLabelledBy="passwordLabel"
-          />
+          <View style={styles.passwordWrap}>
+            <TextInput
+              style={[styles.input, styles.passwordInput]}
+              value={password}
+              onChangeText={setPassword}
+              secureTextEntry={!showPassword}
+              placeholder="••••••••"
+              placeholderTextColor={colors.textFaint}
+              accessibilityLabelledBy="passwordLabel"
+            />
+            <TouchableOpacity
+              style={styles.eyeBtn}
+              onPress={() => setShowPassword((v) => !v)}
+              hitSlop={10}
+              accessibilityRole="button"
+              accessibilityLabel={showPassword ? 'Hide password' : 'Show password'}
+            >
+              <Ionicons name={showPassword ? 'eye-off-outline' : 'eye-outline'} size={20} color={colors.textFaint} />
+            </TouchableOpacity>
+          </View>
           {fieldError('password') && (
             <Text style={styles.fieldError} accessibilityRole="alert">{fieldError('password')}</Text>
           )}
 
           <Text style={styles.label} nativeID="confirmLabel">Confirm Password</Text>
-          <TextInput
-            style={styles.input}
-            value={confirm}
-            onChangeText={setConfirm}
-            secureTextEntry
-            placeholder="••••••••"
-            placeholderTextColor={colors.textFaint}
-            accessibilityLabelledBy="confirmLabel"
-          />
+          <View style={styles.passwordWrap}>
+            <TextInput
+              style={[styles.input, styles.passwordInput]}
+              value={confirm}
+              onChangeText={setConfirm}
+              secureTextEntry={!showConfirm}
+              placeholder="••••••••"
+              placeholderTextColor={colors.textFaint}
+              accessibilityLabelledBy="confirmLabel"
+            />
+            <TouchableOpacity
+              style={styles.eyeBtn}
+              onPress={() => setShowConfirm((v) => !v)}
+              hitSlop={10}
+              accessibilityRole="button"
+              accessibilityLabel={showConfirm ? 'Hide password' : 'Show password'}
+            >
+              <Ionicons name={showConfirm ? 'eye-off-outline' : 'eye-outline'} size={20} color={colors.textFaint} />
+            </TouchableOpacity>
+          </View>
 
           {formError && (
             <Text style={styles.formError} accessibilityRole="alert">{formError}</Text>
@@ -139,6 +164,9 @@ const styles = StyleSheet.create({
     ...type.body,
   },
   fieldError: { ...type.caption, color: colors.danger, marginTop: 4 },
+  passwordWrap: { justifyContent: 'center' },
+  passwordInput: { paddingRight: 44 },
+  eyeBtn: { position: 'absolute', right: spacing.md },
   formError: { ...type.caption, color: colors.danger, marginTop: spacing.sm },
   submitBtn: {
     backgroundColor: colors.gold,

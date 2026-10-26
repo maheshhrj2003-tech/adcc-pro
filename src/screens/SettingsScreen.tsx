@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, ScrollView, Share, Linking, Alert, ActivityIndicator } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Constants from 'expo-constants';
 import * as Updates from 'expo-updates';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
@@ -50,6 +51,7 @@ function SectionLabel({ children }: { children: string }) {
 }
 
 export default function SettingsScreen({ navigation }: Props) {
+  const insets = useSafeAreaInsets();
   const { isAuthenticated, user, logout } = useAuth();
   const [checkingUpdate, setCheckingUpdate] = useState(false);
 
@@ -96,7 +98,7 @@ export default function SettingsScreen({ navigation }: Props) {
 
   return (
     <View style={styles.screen}>
-      <View style={styles.header}>
+      <View style={[styles.header, { paddingTop: insets.top + spacing.sm }]}>
         <TouchableOpacity onPress={() => navigation.goBack()} hitSlop={12} accessibilityRole="button" accessibilityLabel="Go back">
           <Ionicons name="chevron-back" size={22} color={colors.text} />
         </TouchableOpacity>

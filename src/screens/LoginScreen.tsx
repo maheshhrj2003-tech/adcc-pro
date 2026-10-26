@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { View, Text, StyleSheet, TextInput, TouchableOpacity, ActivityIndicator, KeyboardAvoidingView, Platform } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../navigation/types';
 import ChromeHeader from '../components/ChromeHeader';
@@ -13,6 +14,7 @@ export default function LoginScreen({ navigation }: Props) {
   const { login } = useAuth();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -57,15 +59,26 @@ export default function LoginScreen({ navigation }: Props) {
             accessibilityLabelledBy="emailLabel"
           />
           <Text style={styles.label} nativeID="passwordLabel">Password</Text>
-          <TextInput
-            style={styles.input}
-            value={password}
-            onChangeText={setPassword}
-            secureTextEntry
-            placeholder="••••••••"
-            placeholderTextColor={colors.textFaint}
-            accessibilityLabelledBy="passwordLabel"
-          />
+          <View style={styles.passwordWrap}>
+            <TextInput
+              style={[styles.input, styles.passwordInput]}
+              value={password}
+              onChangeText={setPassword}
+              secureTextEntry={!showPassword}
+              placeholder="••••••••"
+              placeholderTextColor={colors.textFaint}
+              accessibilityLabelledBy="passwordLabel"
+            />
+            <TouchableOpacity
+              style={styles.eyeBtn}
+              onPress={() => setShowPassword((v) => !v)}
+              hitSlop={10}
+              accessibilityRole="button"
+              accessibilityLabel={showPassword ? 'Hide password' : 'Show password'}
+            >
+              <Ionicons name={showPassword ? 'eye-off-outline' : 'eye-outline'} size={20} color={colors.textFaint} />
+            </TouchableOpacity>
+          </View>
 
           {error && (
             <Text style={styles.error} accessibilityRole="alert">
@@ -111,6 +124,9 @@ const styles = StyleSheet.create({
     ...type.body,
   },
   error: { ...type.caption, color: colors.danger, marginTop: spacing.sm },
+  passwordWrap: { justifyContent: 'center' },
+  passwordInput: { paddingRight: 44 },
+  eyeBtn: { position: 'absolute', right: spacing.md },
   submitBtn: {
     backgroundColor: colors.gold,
     paddingVertical: 14,
